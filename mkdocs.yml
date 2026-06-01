@@ -1,0 +1,51 @@
+site_name: ROS2 Task Orchestrator
+site_description: ROS2-native task orchestration for robot actions, services, missions and observability.
+repo_name: ros_task_orchestrator
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+
+nav:
+  - Overview: index.md
+  - Getting Started: getting-started.md
+  - Concepts:
+      - Observability: concepts/observability.md
+      - Architecture: architecture.md
+      - Event Envelope: event_envelope.md
+  - Configuration:
+      - Task YAML: configuration/task-yaml.md
+      - SQLite Storage: operations/sqlite-storage.md
+  - API:
+      - Public API: api/public-api.md
+      - Field Reference: public_api_reference.md
+  - Examples:
+      - Nav2 Tasks: examples/nav2.md
+  - Operations:
+      - Recovery: operations/recovery.md
+      - External Clients: external_client_integration.md
+      - ROS2 Support: ros_support.md
+  - Design:
+      - Product And API RFC: rfc/0001-product-and-api.md
+      - ADR 0001: adr/0001-project-identity-governance.md
+      - ADR 0002: adr/0002-api-compatibility.md
+      - ADR 0003: adr/0003-task-lifecycle.md
+      - ADR 0004: adr/0004-persistence-model.md
+      - ADR 0005: adr/0005-mission-model.md
+      - ADR 0006: adr/0006-bridge-boundaries.md
+      - ADR 0007: adr/0007-ros-distribution-support.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+plugins:
+  - search

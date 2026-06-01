@@ -30,7 +30,7 @@ jobs:
         run: mypy task_orchestrator_core/task_orchestrator_core
 
   docker-build-test:
-    name: ROS 2 ${{ matrix.ros_distro }}
+    name: ROS2 ${{ matrix.ros_distro }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -44,7 +44,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build --build-arg ROS_DISTRO=${{ matrix.ros_distro }} -f docker/Dockerfile -t ros-task-orchestrator:${{ matrix.ros_distro }} .
+        run: >
+          docker build
+          --build-arg ROS_DISTRO=${{ matrix.ros_distro }}
+          -f docker/Dockerfile
+          -t ros-task-orchestrator:${{ matrix.ros_distro }}
+          .
 
       - name: Run tests
-        run: docker run --rm ros-task-orchestrator:${{ matrix.ros_distro }} bash -lc "cd /ros_ws && colcon test --event-handlers console_direct+ && colcon test-result --verbose"
+        run: >
+          docker run --rm ros-task-orchestrator:${{ matrix.ros_distro }}
+          bash -lc
+          "cd /ros_ws &&
+          colcon test --event-handlers console_direct+ &&
+          colcon test-result --verbose"

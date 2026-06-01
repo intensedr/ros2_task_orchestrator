@@ -28,7 +28,7 @@ task_orchestrator:
 ```
 
 The primary public API uses the `/task_orchestrator` namespace and is
-documented in [Public API](../public_api.md).
+documented in [Public API](../api/public-api.md).
 
 ## Consequences
 

@@ -12,12 +12,18 @@ The project is designed as an edge task layer. Existing ROS2 actions and
 services keep implementing robot behavior; the orchestrator provides a common
 entry point, task state, results, feedback and events.
 
-## Supported ROS2 Distributions
+## ROS2 Distribution Support
 
-- Humble
-- Jazzy
+| Distribution | Status | Notes |
+|---|---|---|
+| Humble | Supported | Minimum supported distribution. |
+| Jazzy | Supported | Current CI target. |
+| Lyrical | Planned | Added after build and CI validation. |
+| Foxy | Planned legacy | Best-effort source compatibility for legacy robots. |
 
-Humble is the minimum supported distribution.
+Foxy is end-of-life upstream and will not be part of the default CI matrix.
+Lyrical is the current ROS2 release line and is tracked as the next support
+target.
 
 ## Packages
 
@@ -55,11 +61,15 @@ docker build --build-arg ROS_DISTRO=jazzy -f docker/Dockerfile -t ros-task-orche
 
 ## Documentation
 
-- [Architecture](docs/architecture.md)
-- [Public API](docs/public_api.md)
-- [External Client Integration](docs/external_client_integration.md)
-- [ROS2 Support Policy](docs/ros_support.md)
-- [Event Envelope](docs/event_envelope.md)
+- [Docs Home](docs/index.md): overview and navigation.
+- [Getting Started](docs/getting-started.md): build, run and first task.
+- [Task YAML](docs/configuration/task-yaml.md): declare service/action-backed tasks.
+- [Public API](docs/api/public-api.md): actions, topics and services.
+- [Observability](docs/concepts/observability.md): events, feedback and structured logs.
+- [SQLite Storage](docs/operations/sqlite-storage.md): optional durability.
+- [Recovery](docs/operations/recovery.md): late-client and restart recovery.
+- [Nav2 Example](docs/examples/nav2.md): navigation task config.
+- [Architecture](docs/architecture.md): core boundaries and runtime shape.
 
 ## License
 

@@ -63,7 +63,7 @@ Task state flows back through:
 ## Public API Scope
 
 The public ROS2 actions, topics and services are documented in
-[Public API](../public_api.md). Field-level message and service contracts are
+[Public API](../api/public-api.md). Field-level message and service contracts are
 documented in [Public API Reference](../public_api_reference.md).
 
 Pause and resume services return `UNSUPPORTED` when the requested capability is
