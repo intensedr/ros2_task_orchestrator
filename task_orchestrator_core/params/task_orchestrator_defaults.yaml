@@ -1,0 +1,13 @@
+task_orchestrator:
+  ros__parameters:
+    api_version: "v1alpha1"
+    enable_compatibility_aliases: false
+    enable_debug_task_servers: false
+    event_record_limit: 1000
+    task_record_limit: 1000
+    tasks_config_path: ""
+    tasks: []
+    storage:
+      enabled: false
+      sqlite_path: ""
+      retention_days: 30

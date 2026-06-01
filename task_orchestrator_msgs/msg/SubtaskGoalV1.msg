@@ -1,0 +1,9 @@
+string subtask_id
+string task_id
+string task_name
+string task_data_json
+bool allow_skipping
+int32 max_attempts
+float64 timeout_sec
+string[] depends_on
+string condition_json

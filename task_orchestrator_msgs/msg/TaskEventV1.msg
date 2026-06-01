@@ -1,0 +1,13 @@
+string api_version
+string event_id
+string event_type
+string task_id
+string task_name
+string source
+string correlation_id
+string previous_status
+string current_status
+string error_code
+string error_message
+string data_json
+builtin_interfaces/Time stamp

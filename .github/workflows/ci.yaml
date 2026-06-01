@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  python-quality:
+    name: Python quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install quality tools
+        run: python -m pip install ruff mypy
+
+      - name: Ruff
+        run: ruff check task_orchestrator_core
+
+      - name: Mypy
+        run: mypy task_orchestrator_core/task_orchestrator_core
+
+  docker-build-test:
+    name: ROS 2 ${{ matrix.ros_distro }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ros_distro:
+          - humble
+          - jazzy
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build --build-arg ROS_DISTRO=${{ matrix.ros_distro }} -f docker/Dockerfile -t ros-task-orchestrator:${{ matrix.ros_distro }} .
+
+      - name: Run tests
+        run: docker run --rm ros-task-orchestrator:${{ matrix.ros_distro }} bash -lc "cd /ros_ws && colcon test --event-handlers console_direct+ && colcon test-result --verbose"

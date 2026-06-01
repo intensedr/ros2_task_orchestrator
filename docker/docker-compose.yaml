@@ -1,0 +1,12 @@
+services:
+  task_orchestrator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO:-humble}
+    image: ros-task-orchestrator:${ROS_DISTRO:-humble}
+    network_mode: host
+    stdin_open: true
+    tty: true
+    command: ros2 launch task_orchestrator_core task_orchestrator.launch.py

@@ -1,0 +1,14 @@
+string api_version
+string task_name
+string topic
+string msg_interface
+string task_server_type
+bool blocking
+bool cancel_on_stop
+bool cancel_reported_as_success
+bool reentrant
+bool is_system_task
+int32 priority_default
+float64 cancel_timeout
+string[] resources
+string[] tags

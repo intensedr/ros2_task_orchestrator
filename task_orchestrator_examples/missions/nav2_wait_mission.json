@@ -1,0 +1,34 @@
+{
+  "mission_id": "nav2-demo-mission",
+  "subtasks": [
+    {
+      "subtask_id": "navigate",
+      "task_name": "nav2/navigate_to_pose",
+      "task_data_json": {
+        "pose": {
+          "header": {
+            "frame_id": "map"
+          },
+          "pose": {
+            "position": {
+              "x": 1.0,
+              "y": 0.0,
+              "z": 0.0
+            },
+            "orientation": {
+              "w": 1.0
+            }
+          }
+        },
+        "behavior_tree": ""
+      }
+    },
+    {
+      "subtask_id": "settle",
+      "task_name": "system/wait",
+      "task_data_json": {
+        "duration_sec": 2.0
+      }
+    }
+  ]
+}

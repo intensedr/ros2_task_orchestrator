@@ -1,0 +1,17 @@
+string api_version
+string mission_id
+SubtaskGoalV1[] subtasks
+---
+string api_version
+string mission_id
+string task_status
+string error_code
+string error_message
+SubtaskResultV1[] mission_results
+---
+string api_version
+string mission_id
+string active_subtask_id
+float32 progress
+string feedback_json
+builtin_interfaces/Time stamp

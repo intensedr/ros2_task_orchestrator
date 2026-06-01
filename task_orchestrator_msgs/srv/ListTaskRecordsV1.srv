@@ -1,0 +1,7 @@
+string task_name
+string task_status
+string source
+string correlation_id
+uint32 limit
+---
+TaskRecordV1[] records

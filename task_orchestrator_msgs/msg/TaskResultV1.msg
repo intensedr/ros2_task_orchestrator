@@ -1,0 +1,12 @@
+string api_version
+string task_id
+string task_name
+string source
+string correlation_id
+string task_status
+string error_code
+string error_message
+string task_result_json
+builtin_interfaces/Time created_at
+builtin_interfaces/Time started_at
+builtin_interfaces/Time finished_at

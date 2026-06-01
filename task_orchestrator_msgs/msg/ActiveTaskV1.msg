@@ -1,0 +1,10 @@
+string api_version
+string task_id
+string task_name
+string source
+string correlation_id
+int32 priority
+string task_status
+builtin_interfaces/Time created_at
+builtin_interfaces/Time started_at
+string[] tags

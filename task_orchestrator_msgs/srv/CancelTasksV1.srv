@@ -1,0 +1,9 @@
+string[] task_ids
+string source
+string correlation_id
+---
+bool success
+string[] canceled_task_ids
+string[] failed_task_ids
+string error_code
+string error_message

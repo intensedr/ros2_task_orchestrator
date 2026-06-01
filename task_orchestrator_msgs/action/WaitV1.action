@@ -1,0 +1,11 @@
+string api_version
+float64 duration_sec
+---
+string api_version
+string task_status
+string error_code
+string error_message
+---
+string api_version
+float64 remaining_time_sec
+builtin_interfaces/Time stamp

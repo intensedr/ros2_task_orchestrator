@@ -1,0 +1,4 @@
+---
+bool success
+string error_code
+string error_message
