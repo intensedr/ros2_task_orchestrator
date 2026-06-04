@@ -4,10 +4,15 @@ string event_type
 string task_id
 string task_name
 string source
+int32 priority
 string correlation_id
-string previous_status
-string current_status
+builtin_interfaces/Time created_at
+builtin_interfaces/Time started_at
+builtin_interfaces/Time finished_at
+string status
 string error_code
 string error_message
+string result_json
+string previous_status
 string data_json
 builtin_interfaces/Time stamp

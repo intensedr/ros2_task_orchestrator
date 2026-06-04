@@ -3,13 +3,13 @@ from task_orchestrator_core.active_tasks import ActiveTaskEntry, ActiveTaskRegis
 
 def _entry(task_id: str) -> ActiveTaskEntry:
     return ActiveTaskEntry(
-        api_version="v1alpha1",
+        api_version="v1beta1",
         task_id=task_id,
         task_name="system/wait",
         source="test",
         correlation_id="corr-1",
         priority=0,
-        task_status="IN_PROGRESS",
+        status="IN_PROGRESS",
         created_at="created",
         started_at="started",
         tags=("system",),

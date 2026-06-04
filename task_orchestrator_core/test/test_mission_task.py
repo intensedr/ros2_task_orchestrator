@@ -47,13 +47,13 @@ def test_mission_result_json_is_stable():
 
     result_json = parser.result_json(
         mission_id="mission-1",
-        task_status=TaskStatusV1.DONE,
+        status=TaskStatusV1.DONE,
         mission_results=[],
     )
 
     assert json.loads(result_json) == {
         "mission_id": "mission-1",
-        "task_status": "DONE",
+        "status": "DONE",
         "error_code": "",
         "error_message": "",
         "mission_results": [],

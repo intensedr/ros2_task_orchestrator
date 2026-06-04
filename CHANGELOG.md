@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.0 - 2026-06-04
+
+- Added ROS2-native public API contract coverage for
+  `/task_orchestrator/execute_task`, active task/result/event/feedback topics
+  and primary task services.
+- Added common `v1beta1` metadata fields across task-related public messages:
+  `api_version`, `task_id`, `task_name`, `source`, `priority`,
+  `correlation_id`, lifecycle timestamps, `status`, error fields and
+  `result_json`.
+- Changed alpha public field names from `task_status`, `current_status` and
+  `task_result_json` to `status` and `result_json` inside the V1 compatibility
+  interfaces.
+- Changed the default public `api_version` from `v1alpha1` to `v1beta1`.
+- Added service-name constants for `/task_orchestrator/list_tasks`,
+  `/task_orchestrator/get_task`, `/task_orchestrator/cancel_tasks`,
+  `/task_orchestrator/pause_tasks` and `/task_orchestrator/resume_tasks`.
+- Added SQLite storage migration support from the previous alpha task/event
+  status and result column names.
+- Updated public API, event-envelope and getting-started documentation for the
+  `v1beta1` metadata contract.
+
 ## 0.1.0 - 2026-06-01
 
 - Added YAML-backed task registry with built-in `system/wait`,

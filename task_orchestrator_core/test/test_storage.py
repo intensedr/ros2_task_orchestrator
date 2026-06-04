@@ -11,15 +11,15 @@ def _time(sec: int) -> Time:
     return value
 
 
-def _record(task_id: str, task_status: str, source: str = "test") -> TaskRecordV1:
+def _record(task_id: str, status: str, source: str = "test") -> TaskRecordV1:
     result = TaskResultV1()
-    result.api_version = "v1alpha1"
+    result.api_version = "v1beta1"
     result.task_id = task_id
     result.task_name = "system/wait"
     result.source = source
     result.correlation_id = f"{task_id}-corr"
-    result.task_status = task_status
-    result.task_result_json = "{}"
+    result.status = status
+    result.result_json = "{}"
     result.created_at = _time(1)
     result.started_at = _time(2)
     result.finished_at = _time(3)
@@ -31,16 +31,16 @@ def _record(task_id: str, task_status: str, source: str = "test") -> TaskRecordV
     return record
 
 
-def _event(event_id: str, event_type: str, task_id: str, current_status: str) -> TaskEventV1:
+def _event(event_id: str, event_type: str, task_id: str, status: str) -> TaskEventV1:
     event = TaskEventV1()
-    event.api_version = "v1alpha1"
+    event.api_version = "v1beta1"
     event.event_id = event_id
     event.event_type = event_type
     event.task_id = task_id
     event.task_name = "system/wait"
     event.source = "test"
     event.correlation_id = f"{task_id}-corr"
-    event.current_status = current_status
+    event.status = status
     event.data_json = "{}"
     event.stamp = _time(4)
     return event
@@ -65,7 +65,7 @@ def test_sqlite_storage_round_trips_task_records_and_events(tmp_path):
 
         get_record = storage.get_task_record("task-1")
         records_request = ListTaskRecordsV1.Request()
-        records_request.task_status = TaskStatusV1.REJECTED
+        records_request.status = TaskStatusV1.REJECTED
         records_request.source = "operator"
         events_request = ListEventsV1.Request()
         events_request.task_id = "task-1"

@@ -100,7 +100,7 @@ def test_action_task_client_converts_json_goal_and_result():
     assert prepared.goal.order == 5
     assert fake_action_client.goal.order == 5
     assert fake_action_client.timeout_sec == 3.0
-    assert result.task_result_json == '{"sequence": [1, 1, 2]}'
+    assert result.result_json == '{"sequence": [1, 1, 2]}'
 
 
 def test_action_task_client_rejects_invalid_json():

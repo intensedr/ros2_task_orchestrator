@@ -51,7 +51,7 @@ class PreparedServiceTask:
 class ServiceTaskResult:
     """Normalized result returned by a service-backed task."""
 
-    task_result_json: str
+    result_json: str
 
 
 class ServiceTaskClient:
@@ -96,7 +96,7 @@ class ServiceTaskClient:
         if response is None:
             raise ServiceTaskTimeout(f"service call timed out: {prepared.task.topic}")
 
-        return ServiceTaskResult(task_result_json=json.dumps(message_to_ordereddict(response), sort_keys=True))
+        return ServiceTaskResult(result_json=json.dumps(message_to_ordereddict(response), sort_keys=True))
 
     def _get_client(self, prepared: PreparedServiceTask) -> Any:
         key = (prepared.task.topic, prepared.task.msg_interface)

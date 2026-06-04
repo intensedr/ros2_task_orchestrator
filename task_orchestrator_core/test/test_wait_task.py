@@ -10,7 +10,7 @@ def test_wait_task_parses_and_executes_without_external_ros_server():
 
     assert request.duration_sec == 1.5
     assert slept_for == [1.5]
-    assert result.task_result_json == '{"duration_sec": 1.5}'
+    assert result.result_json == '{"duration_sec": 1.5}'
 
 
 def test_wait_task_rejects_invalid_json():

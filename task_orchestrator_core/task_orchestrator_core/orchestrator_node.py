@@ -36,6 +36,11 @@ from task_orchestrator_core.constants import (
     ACTION_EXECUTE_TASK,
     API_VERSION,
     NODE_NAME,
+    SERVICE_CANCEL_TASKS,
+    SERVICE_GET_TASK,
+    SERVICE_LIST_TASKS,
+    SERVICE_PAUSE_TASKS,
+    SERVICE_RESUME_TASKS,
     TOPIC_ACTIVE_TASKS,
     TOPIC_EVENTS,
     TOPIC_FEEDBACK,
@@ -55,7 +60,7 @@ from task_orchestrator_core.system_tasks.mission import (
     MissionTaskParser,
     MissionTaskRequest,
     MissionTaskValidationError,
-    mission_status_from_subtask_status,
+    mission_status_from_subtask_result_status,
 )
 from task_orchestrator_core.system_tasks.wait import WaitTaskExecutor, WaitTaskValidationError
 from task_orchestrator_core.task_models import TaskConfigError, TaskDefinition
@@ -103,8 +108,8 @@ class _ChildGoalHandle:
 
 @dataclass(frozen=True)
 class _TaskExecutionOutcome:
-    task_status: str
-    task_result_json: str
+    status: str
+    result_json: str
     error_code: str = ""
     error_message: str = ""
 
@@ -161,7 +166,7 @@ class TaskOrchestratorNode(Node):
 
         self._list_tasks_service = self.create_service(
             ListTasksV1,
-            "/task_orchestrator/list_tasks",
+            SERVICE_LIST_TASKS,
             self._list_tasks,
             callback_group=self._callback_group,
         )
@@ -173,7 +178,7 @@ class TaskOrchestratorNode(Node):
         )
         self._get_task_service = self.create_service(
             GetTaskV1,
-            "/task_orchestrator/get_task",
+            SERVICE_GET_TASK,
             self._get_task,
             callback_group=self._callback_group,
         )
@@ -191,19 +196,19 @@ class TaskOrchestratorNode(Node):
         )
         self._cancel_tasks_service = self.create_service(
             CancelTasksV1,
-            "/task_orchestrator/cancel_tasks",
+            SERVICE_CANCEL_TASKS,
             self._cancel_tasks,
             callback_group=self._callback_group,
         )
         self._pause_tasks_service = self.create_service(
             PauseTasksV1,
-            "/task_orchestrator/pause_tasks",
+            SERVICE_PAUSE_TASKS,
             self._unsupported_task_control,
             callback_group=self._callback_group,
         )
         self._resume_tasks_service = self.create_service(
             ResumeTasksV1,
-            "/task_orchestrator/resume_tasks",
+            SERVICE_RESUME_TASKS,
             self._unsupported_task_control,
             callback_group=self._callback_group,
         )
@@ -257,7 +262,10 @@ class TaskOrchestratorNode(Node):
         ignored_active_task_ids: set[str] | None = None,
     ) -> ExecuteTaskV1.Result:
         request = goal_handle.request
-        created_at = self.get_clock().now().to_msg()
+        received_at = self.get_clock().now().to_msg()
+        created_at = request.created_at if self._time_is_set(request.created_at) else received_at
+        request.api_version = request.api_version or self.api_version
+        request.created_at = created_at
         task_id_generated = not request.task_id
         task_id = request.task_id or str(uuid.uuid4())
         request.task_id = task_id
@@ -269,7 +277,9 @@ class TaskOrchestratorNode(Node):
             task_name=request.task_name,
             source=request.source,
             correlation_id=request.correlation_id,
-            current_status=TaskStatusV1.RECEIVED,
+            status=TaskStatusV1.RECEIVED,
+            priority=request.priority,
+            created_at=created_at,
             data={
                 "task_id_generated": task_id_generated,
                 "priority": request.priority,
@@ -282,7 +292,7 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=TaskStatusV1.REJECTED,
+                status=TaskStatusV1.REJECTED,
                 error_code=ErrorCodeV1.UNKNOWN_TASK,
                 error_message=f"Unknown task: {request.task_name}",
                 created_at=created_at,
@@ -297,7 +307,7 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=TaskStatusV1.REJECTED,
+                status=TaskStatusV1.REJECTED,
                 error_code=ErrorCodeV1.DUPLICATE_TASK_ID,
                 error_message=f"Task ID is already active: {task_id}",
                 created_at=created_at,
@@ -313,7 +323,7 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=TaskStatusV1.REJECTED,
+                status=TaskStatusV1.REJECTED,
                 error_code=ErrorCodeV1.RESOURCE_CONFLICT,
                 error_message=policy_error,
                 created_at=created_at,
@@ -336,7 +346,7 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=TaskStatusV1.REJECTED,
+                status=TaskStatusV1.REJECTED,
                 error_code=ErrorCodeV1.TASK_DATA_PARSING_FAILED,
                 error_message=str(exc),
                 created_at=created_at,
@@ -350,7 +360,7 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=TaskStatusV1.REJECTED,
+                status=TaskStatusV1.REJECTED,
                 error_code=ErrorCodeV1.TASK_START_FAILED,
                 error_message=str(exc),
                 created_at=created_at,
@@ -364,7 +374,7 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=TaskStatusV1.REJECTED,
+                status=TaskStatusV1.REJECTED,
                 error_code=ErrorCodeV1.UNSUPPORTED,
                 error_message=f"Task server type is not implemented yet: {task.task_server_type}",
                 created_at=created_at,
@@ -384,7 +394,7 @@ class TaskOrchestratorNode(Node):
                 source=request.source,
                 correlation_id=request.correlation_id,
                 priority=request.priority,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=created_at,
                 started_at=started_at,
                 tags=tuple(request.tags),
@@ -399,7 +409,7 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=TaskStatusV1.REJECTED,
+                status=TaskStatusV1.REJECTED,
                 error_code=ErrorCodeV1.DUPLICATE_TASK_ID,
                 error_message=f"Task ID is already active: {task_id}",
                 created_at=created_at,
@@ -417,7 +427,10 @@ class TaskOrchestratorNode(Node):
             source=request.source,
             correlation_id=request.correlation_id,
             previous_status=TaskStatusV1.RECEIVED,
-            current_status=TaskStatusV1.IN_PROGRESS,
+            status=TaskStatusV1.IN_PROGRESS,
+            priority=request.priority,
+            created_at=created_at,
+            started_at=started_at,
             data=self._task_definition_observability_data(task, request),
         )
         self._publish_task_feedback(
@@ -427,9 +440,13 @@ class TaskOrchestratorNode(Node):
             correlation_id=request.correlation_id,
             progress=0.0,
             feedback={
-                "task_status": TaskStatusV1.IN_PROGRESS,
+                "status": TaskStatusV1.IN_PROGRESS,
                 "event_type": "task.started",
             },
+            priority=request.priority,
+            created_at=created_at,
+            started_at=started_at,
+            status=TaskStatusV1.IN_PROGRESS,
         )
         self._publish_active_tasks()
 
@@ -439,15 +456,15 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=outcome.task_status,
+                status=outcome.status,
                 error_code=outcome.error_code,
                 error_message=outcome.error_message,
-                task_result_json=outcome.task_result_json,
+                result_json=outcome.result_json,
                 created_at=created_at,
                 started_at=started_at,
                 finished_at=finished_at,
             )
-            if outcome.task_status == TaskStatusV1.DONE:
+            if outcome.status == TaskStatusV1.DONE:
                 goal_handle.succeed()
             else:
                 goal_handle.abort()
@@ -457,7 +474,7 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=TaskStatusV1.ERROR,
+                status=TaskStatusV1.ERROR,
                 error_code=ErrorCodeV1.SERVER_UNAVAILABLE,
                 error_message=str(exc),
                 created_at=created_at,
@@ -471,7 +488,7 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=TaskStatusV1.ERROR,
+                status=TaskStatusV1.ERROR,
                 error_code=ErrorCodeV1.TASK_TIMEOUT,
                 error_message=str(exc),
                 created_at=created_at,
@@ -485,7 +502,7 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=TaskStatusV1.ERROR,
+                status=TaskStatusV1.ERROR,
                 error_code=ErrorCodeV1.TASK_START_FAILED,
                 error_message=str(exc),
                 created_at=created_at,
@@ -496,11 +513,11 @@ class TaskOrchestratorNode(Node):
             return result
         except ActionTaskCanceled as exc:
             finished_at = self.get_clock().now().to_msg()
-            task_status = TaskStatusV1.DONE if task.cancel_reported_as_success else TaskStatusV1.CANCELED
+            status = TaskStatusV1.DONE if task.cancel_reported_as_success else TaskStatusV1.CANCELED
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=task_status,
+                status=status,
                 error_message="" if task.cancel_reported_as_success else str(exc),
                 created_at=created_at,
                 started_at=started_at,
@@ -516,7 +533,7 @@ class TaskOrchestratorNode(Node):
             result = self._make_result(
                 request=request,
                 task_id=task_id,
-                task_status=TaskStatusV1.ERROR,
+                status=TaskStatusV1.ERROR,
                 error_code=ErrorCodeV1.INTERNAL_ERROR,
                 error_message=str(exc),
                 created_at=created_at,
@@ -529,7 +546,7 @@ class TaskOrchestratorNode(Node):
             self._active_tasks.remove(task_id)
             self._publish_active_tasks()
             if "result" in locals():
-                self._publish_terminal_result_and_event(result, self._terminal_event_type(result.task_status))
+                self._publish_terminal_result_and_event(result, self._terminal_event_type(result.status))
 
     def _prepare_task(self, task: TaskDefinition, task_data_json: str, task_id: str) -> Any:
         if task.task_server_type == "system/cancel_task":
@@ -561,18 +578,18 @@ class TaskOrchestratorNode(Node):
             return self._execute_stop_task(prepared_task, task_id, request)
         if task.task_server_type == "system/wait":
             return _TaskExecutionOutcome(
-                task_status=TaskStatusV1.DONE,
-                task_result_json=self._wait_task.execute(prepared_task).task_result_json,
+                status=TaskStatusV1.DONE,
+                result_json=self._wait_task.execute(prepared_task).result_json,
             )
         if task.task_server_type == "action":
             return _TaskExecutionOutcome(
-                task_status=TaskStatusV1.DONE,
-                task_result_json=self._action_task_client.execute(prepared_task, task_id).task_result_json,
+                status=TaskStatusV1.DONE,
+                result_json=self._action_task_client.execute(prepared_task, task_id).result_json,
             )
         if task.task_server_type == "service":
             return _TaskExecutionOutcome(
-                task_status=TaskStatusV1.DONE,
-                task_result_json=self._service_task_client.execute(prepared_task).task_result_json,
+                status=TaskStatusV1.DONE,
+                result_json=self._service_task_client.execute(prepared_task).result_json,
             )
         raise NotImplementedError
 
@@ -612,10 +629,10 @@ class TaskOrchestratorNode(Node):
             data=self._cancel_response_observability_data(request, response),
         )
         return _TaskExecutionOutcome(
-            task_status=TaskStatusV1.DONE if response.success else TaskStatusV1.ERROR,
+            status=TaskStatusV1.DONE if response.success else TaskStatusV1.ERROR,
             error_code=response.error_code,
             error_message=response.error_message,
-            task_result_json=self._control_task.cancel_result_json(
+            result_json=self._control_task.cancel_result_json(
                 success=response.success,
                 canceled_task_ids=list(response.canceled_task_ids),
                 failed_task_ids=list(response.failed_task_ids),
@@ -655,10 +672,10 @@ class TaskOrchestratorNode(Node):
             data=self._stop_response_observability_data(request, response),
         )
         return _TaskExecutionOutcome(
-            task_status=TaskStatusV1.DONE if response.success else TaskStatusV1.ERROR,
+            status=TaskStatusV1.DONE if response.success else TaskStatusV1.ERROR,
             error_code=response.error_code,
             error_message=response.error_message,
-            task_result_json=self._control_task.stop_result_json(
+            result_json=self._control_task.stop_result_json(
                 success=response.success,
                 stopped_task_ids=list(response.stopped_task_ids),
                 error_code=response.error_code,
@@ -681,7 +698,8 @@ class TaskOrchestratorNode(Node):
             mission_task_id=mission_task_id,
             source=request.source,
             correlation_id=request.correlation_id,
-            current_status=TaskStatusV1.IN_PROGRESS,
+            status=TaskStatusV1.IN_PROGRESS,
+            priority=request.priority,
             data={
                 "total_subtasks": total_subtasks,
             },
@@ -694,6 +712,7 @@ class TaskOrchestratorNode(Node):
             total_subtasks=total_subtasks,
             source=request.source,
             correlation_id=request.correlation_id,
+            priority=request.priority,
         )
 
         for index, subtask in enumerate(mission.subtasks, start=1):
@@ -704,7 +723,8 @@ class TaskOrchestratorNode(Node):
                 subtask=subtask,
                 source=request.source,
                 correlation_id=request.correlation_id,
-                current_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
+                priority=request.priority,
                 data={
                     "subtask_index": index,
                     "total_subtasks": total_subtasks,
@@ -728,6 +748,7 @@ class TaskOrchestratorNode(Node):
                 correlation_id=request.correlation_id,
                 subtask_index=index,
                 total_subtasks=total_subtasks,
+                priority=request.priority,
             )
 
             self._publish_mission_feedback(
@@ -738,14 +759,15 @@ class TaskOrchestratorNode(Node):
                 total_subtasks=total_subtasks,
                 source=request.source,
                 correlation_id=request.correlation_id,
+                priority=request.priority,
             )
 
-            if subtask_result.task_status == TaskStatusV1.DONE:
+            if subtask_result.status == TaskStatusV1.DONE:
                 continue
             if subtask_result.skipped:
                 continue
 
-            mission_status = mission_status_from_subtask_status(subtask_result.task_status)
+            mission_status = mission_status_from_subtask_result_status(subtask_result.status)
             terminal_event_type = "mission.canceled" if mission_status == TaskStatusV1.CANCELED else "mission.failed"
             self._publish_mission_lifecycle_event(
                 event_type=terminal_event_type,
@@ -753,10 +775,11 @@ class TaskOrchestratorNode(Node):
                 mission_task_id=mission_task_id,
                 source=request.source,
                 correlation_id=request.correlation_id,
-                current_status=mission_status,
+                status=mission_status,
                 previous_status=TaskStatusV1.IN_PROGRESS,
                 error_code=subtask_result.error_code,
                 error_message=subtask_result.error_message,
+                priority=request.priority,
                 data={
                     "completed_subtasks": len(mission_results),
                     "total_subtasks": total_subtasks,
@@ -765,12 +788,12 @@ class TaskOrchestratorNode(Node):
                 },
             )
             return _TaskExecutionOutcome(
-                task_status=mission_status,
+                status=mission_status,
                 error_code=subtask_result.error_code,
                 error_message=subtask_result.error_message,
-                task_result_json=self._mission_task.result_json(
+                result_json=self._mission_task.result_json(
                     mission_id=mission.mission_id,
-                    task_status=mission_status,
+                    status=mission_status,
                     mission_results=mission_results,
                     error_code=subtask_result.error_code,
                     error_message=subtask_result.error_message,
@@ -783,18 +806,19 @@ class TaskOrchestratorNode(Node):
             mission_task_id=mission_task_id,
             source=request.source,
             correlation_id=request.correlation_id,
-            current_status=TaskStatusV1.DONE,
+            status=TaskStatusV1.DONE,
             previous_status=TaskStatusV1.IN_PROGRESS,
+            priority=request.priority,
             data={
                 "completed_subtasks": len(mission_results),
                 "total_subtasks": total_subtasks,
             },
         )
         return _TaskExecutionOutcome(
-            task_status=TaskStatusV1.DONE,
-            task_result_json=self._mission_task.result_json(
+            status=TaskStatusV1.DONE,
+            result_json=self._mission_task.result_json(
                 mission_id=mission.mission_id,
-                task_status=TaskStatusV1.DONE,
+                status=TaskStatusV1.DONE,
                 mission_results=mission_results,
             ),
         )
@@ -824,12 +848,12 @@ class TaskOrchestratorNode(Node):
                 ignored_active_task_ids={mission_task_id},
             )
 
-            if last_result.task_status == TaskStatusV1.DONE:
+            if last_result.status == TaskStatusV1.DONE:
                 return MissionSubtaskResult(
                     subtask_id=subtask.subtask_id,
                     task_id=subtask_request.task_id,
                     task_name=subtask.task_name,
-                    task_status=TaskStatusV1.DONE,
+                    status=TaskStatusV1.DONE,
                     skipped=False,
                     attempts=attempt,
                 )
@@ -840,7 +864,7 @@ class TaskOrchestratorNode(Node):
                 subtask_id=subtask.subtask_id,
                 task_id=last_result.task_id,
                 task_name=subtask.task_name,
-                task_status=TaskStatusV1.SKIPPED,
+                status=TaskStatusV1.SKIPPED,
                 skipped=True,
                 attempts=subtask.max_attempts,
                 error_code=last_result.error_code,
@@ -851,7 +875,7 @@ class TaskOrchestratorNode(Node):
             subtask_id=subtask.subtask_id,
             task_id=last_result.task_id,
             task_name=subtask.task_name,
-            task_status=last_result.task_status,
+            status=last_result.status,
             skipped=False,
             attempts=subtask.max_attempts,
             error_code=last_result.error_code,
@@ -922,7 +946,7 @@ class TaskOrchestratorNode(Node):
             (not request.task_id or event.task_id == request.task_id)
             and (not request.task_name or event.task_name == request.task_name)
             and (not request.event_type or event.event_type == request.event_type)
-            and (not request.current_status or event.current_status == request.current_status)
+            and (not request.status or event.status == request.status)
             and (not request.source or event.source == request.source)
             and (not request.correlation_id or event.correlation_id == request.correlation_id)
         )
@@ -996,7 +1020,7 @@ class TaskOrchestratorNode(Node):
         result = record.result
         return (
             (not request.task_name or result.task_name == request.task_name)
-            and (not request.task_status or result.task_status == request.task_status)
+            and (not request.status or result.status == request.status)
             and (not request.source or result.source == request.source)
             and (not request.correlation_id or result.correlation_id == request.correlation_id)
         )
@@ -1181,11 +1205,26 @@ class TaskOrchestratorNode(Node):
     def _publish_empty_active_tasks(self) -> None:
         msg = ActiveTaskArrayV1()
         msg.stamp = self.get_clock().now().to_msg()
+        msg.api_version = self.api_version
+        msg.task_name = "task_orchestrator/active_tasks"
+        msg.source = "system"
+        msg.created_at = msg.stamp
+        msg.started_at = msg.stamp
+        msg.finished_at = msg.stamp
+        msg.result_json = "{}"
         self._active_tasks_pub.publish(msg)
 
     def _publish_active_tasks(self) -> None:
         msg = ActiveTaskArrayV1()
         msg.stamp = self.get_clock().now().to_msg()
+        msg.api_version = self.api_version
+        msg.task_name = "task_orchestrator/active_tasks"
+        msg.source = "system"
+        msg.created_at = msg.stamp
+        msg.started_at = msg.stamp
+        msg.finished_at = msg.stamp
+        msg.status = TaskStatusV1.IN_PROGRESS if len(self._active_tasks) else ""
+        msg.result_json = "{}"
         msg.active_tasks = [self._active_task_to_msg(task) for task in self._active_tasks.list()]
         self._active_tasks_pub.publish(msg)
 
@@ -1198,9 +1237,10 @@ class TaskOrchestratorNode(Node):
         result.task_id = task_id
         result.task_name = request.task_name
         result.source = request.source
+        result.priority = request.priority
         result.correlation_id = request.correlation_id
-        result.task_status = TaskStatusV1.RECEIVED
-        result.task_result_json = "{}"
+        result.status = TaskStatusV1.RECEIVED
+        result.result_json = "{}"
         result.created_at = created_at
 
         record = TaskRecordV1()
@@ -1225,6 +1265,7 @@ class TaskOrchestratorNode(Node):
         self._set_task_record(result.task_id, record)
 
     def _set_task_record(self, task_id: str, record: TaskRecordV1) -> None:
+        self._sync_task_record_metadata(record)
         self._task_records[task_id] = record
         self._task_records.move_to_end(task_id)
         self._write_task_record(record)
@@ -1249,9 +1290,10 @@ class TaskOrchestratorNode(Node):
         result.task_id = task.task_id
         result.task_name = task.task_name
         result.source = task.source
+        result.priority = task.priority
         result.correlation_id = task.correlation_id
-        result.task_status = task.task_status
-        result.task_result_json = "{}"
+        result.status = task.status
+        result.result_json = "{}"
         result.created_at = task.created_at
         result.started_at = task.started_at
 
@@ -1268,6 +1310,7 @@ class TaskOrchestratorNode(Node):
         copied_record.active = record.active
         copied_record.task_data_json = record.task_data_json
         copied_record.tags = list(record.tags)
+        self._sync_task_record_metadata(copied_record)
         return copied_record
 
     def _copy_task_result(self, result: TaskResultV1) -> TaskResultV1:
@@ -1276,11 +1319,12 @@ class TaskOrchestratorNode(Node):
         copied_result.task_id = result.task_id
         copied_result.task_name = result.task_name
         copied_result.source = result.source
+        copied_result.priority = result.priority
         copied_result.correlation_id = result.correlation_id
-        copied_result.task_status = result.task_status
+        copied_result.status = result.status
         copied_result.error_code = result.error_code
         copied_result.error_message = result.error_message
-        copied_result.task_result_json = result.task_result_json
+        copied_result.result_json = result.result_json
         copied_result.created_at = result.created_at
         copied_result.started_at = result.started_at
         copied_result.finished_at = result.finished_at
@@ -1292,15 +1336,32 @@ class TaskOrchestratorNode(Node):
         msg.task_id = result.task_id
         msg.task_name = result.task_name
         msg.source = result.source
+        msg.priority = result.priority
         msg.correlation_id = result.correlation_id
-        msg.task_status = result.task_status
+        msg.status = result.status
         msg.error_code = result.error_code
         msg.error_message = result.error_message
-        msg.task_result_json = result.task_result_json
+        msg.result_json = result.result_json
         msg.created_at = result.created_at
         msg.started_at = result.started_at
         msg.finished_at = result.finished_at
         return msg
+
+    def _sync_task_record_metadata(self, record: TaskRecordV1) -> None:
+        result = record.result
+        record.api_version = result.api_version
+        record.task_id = result.task_id
+        record.task_name = result.task_name
+        record.source = result.source
+        record.priority = result.priority
+        record.correlation_id = result.correlation_id
+        record.created_at = result.created_at
+        record.started_at = result.started_at
+        record.finished_at = result.finished_at
+        record.status = result.status
+        record.error_code = result.error_code
+        record.error_message = result.error_message
+        record.result_json = result.result_json
 
     def _publish_mission_lifecycle_event(
         self,
@@ -1309,10 +1370,11 @@ class TaskOrchestratorNode(Node):
         mission_task_id: str,
         source: str,
         correlation_id: str,
-        current_status: str,
+        status: str,
         previous_status: str = "",
         error_code: str = "",
         error_message: str = "",
+        priority: int = 0,
         data: dict[str, Any] | None = None,
     ) -> None:
         event_data = {
@@ -1327,9 +1389,10 @@ class TaskOrchestratorNode(Node):
             source=source,
             correlation_id=correlation_id,
             previous_status=previous_status,
-            current_status=current_status,
+            status=status,
             error_code=error_code,
             error_message=error_message,
+            priority=priority,
             data=event_data,
         )
 
@@ -1341,7 +1404,8 @@ class TaskOrchestratorNode(Node):
         subtask: MissionSubtask,
         source: str,
         correlation_id: str,
-        current_status: str,
+        status: str,
+        priority: int = 0,
         data: dict[str, Any] | None = None,
     ) -> None:
         event_data = {
@@ -1357,7 +1421,8 @@ class TaskOrchestratorNode(Node):
             task_name=subtask.task_name,
             source=source,
             correlation_id=correlation_id,
-            current_status=current_status,
+            status=status,
+            priority=priority,
             data=event_data,
         )
 
@@ -1370,11 +1435,12 @@ class TaskOrchestratorNode(Node):
         correlation_id: str,
         subtask_index: int,
         total_subtasks: int,
+        priority: int = 0,
     ) -> None:
         event_type = "mission.subtask.completed"
         if subtask_result.skipped:
             event_type = "mission.subtask.skipped"
-        elif subtask_result.task_status != TaskStatusV1.DONE:
+        elif subtask_result.status != TaskStatusV1.DONE:
             event_type = "mission.subtask.failed"
 
         self._publish_event(
@@ -1384,9 +1450,10 @@ class TaskOrchestratorNode(Node):
             source=source,
             correlation_id=correlation_id,
             previous_status=TaskStatusV1.IN_PROGRESS,
-            current_status=subtask_result.task_status,
+            status=subtask_result.status,
             error_code=subtask_result.error_code,
             error_message=subtask_result.error_message,
+            priority=priority,
             data={
                 "mission_id": mission_id,
                 "mission_task_id": mission_task_id,
@@ -1410,11 +1477,11 @@ class TaskOrchestratorNode(Node):
         error_code: str = "",
         error_message: str = "",
     ) -> None:
-        current_status = TaskStatusV1.IN_PROGRESS
+        status = TaskStatusV1.IN_PROGRESS
         if success is True:
-            current_status = TaskStatusV1.DONE
+            status = TaskStatusV1.DONE
         elif success is False:
-            current_status = TaskStatusV1.ERROR
+            status = TaskStatusV1.ERROR
 
         self._publish_event(
             event_type=event_type,
@@ -1423,7 +1490,7 @@ class TaskOrchestratorNode(Node):
             source=source,
             correlation_id=correlation_id,
             previous_status=TaskStatusV1.IN_PROGRESS if success is not None else "",
-            current_status=current_status,
+            status=status,
             error_code=error_code,
             error_message=error_message,
             data={
@@ -1446,7 +1513,7 @@ class TaskOrchestratorNode(Node):
             task_name="system/config",
             source="system",
             correlation_id="",
-            current_status=TaskStatusV1.DONE if success else TaskStatusV1.ERROR,
+            status=TaskStatusV1.DONE if success else TaskStatusV1.ERROR,
             error_code=error_code,
             error_message=error_message,
             data={
@@ -1498,13 +1565,17 @@ class TaskOrchestratorNode(Node):
         total_subtasks: int,
         source: str,
         correlation_id: str,
+        priority: int = 0,
     ) -> None:
         msg = TaskFeedbackV1()
         msg.api_version = self.api_version
         msg.task_id = mission_task_id
         msg.task_name = "system/mission"
         msg.source = source
+        msg.priority = priority
         msg.correlation_id = correlation_id
+        msg.status = TaskStatusV1.IN_PROGRESS
+        msg.result_json = "{}"
         msg.progress = float(completed_subtasks / total_subtasks) if total_subtasks else 1.0
         msg.feedback_json = json.dumps(
             {
@@ -1526,13 +1597,32 @@ class TaskOrchestratorNode(Node):
         correlation_id: str,
         progress: float,
         feedback: dict[str, Any],
+        priority: int = 0,
+        created_at: Any | None = None,
+        started_at: Any | None = None,
+        finished_at: Any | None = None,
+        status: str = "",
+        error_code: str = "",
+        error_message: str = "",
+        result_json: str = "{}",
     ) -> None:
         msg = TaskFeedbackV1()
         msg.api_version = self.api_version
         msg.task_id = task_id
         msg.task_name = task_name
         msg.source = source
+        msg.priority = priority
         msg.correlation_id = correlation_id
+        if created_at is not None:
+            msg.created_at = created_at
+        if started_at is not None:
+            msg.started_at = started_at
+        if finished_at is not None:
+            msg.finished_at = finished_at
+        msg.status = status
+        msg.error_code = error_code
+        msg.error_message = error_message
+        msg.result_json = result_json
         msg.progress = progress
         msg.feedback_json = self._json_dumps(feedback)
         msg.stamp = self.get_clock().now().to_msg()
@@ -1545,10 +1635,15 @@ class TaskOrchestratorNode(Node):
         task_name: str,
         source: str,
         correlation_id: str,
-        current_status: str,
+        status: str,
         previous_status: str = "",
         error_code: str = "",
         error_message: str = "",
+        priority: int = 0,
+        created_at: Any | None = None,
+        started_at: Any | None = None,
+        finished_at: Any | None = None,
+        result_json: str = "{}",
         data: dict[str, Any] | None = None,
     ) -> None:
         msg = TaskEventV1()
@@ -1558,11 +1653,19 @@ class TaskOrchestratorNode(Node):
         msg.task_id = task_id
         msg.task_name = task_name
         msg.source = source
+        msg.priority = priority
         msg.correlation_id = correlation_id
+        if created_at is not None:
+            msg.created_at = created_at
+        if started_at is not None:
+            msg.started_at = started_at
+        if finished_at is not None:
+            msg.finished_at = finished_at
         msg.previous_status = previous_status
-        msg.current_status = current_status
+        msg.status = status
         msg.error_code = error_code
         msg.error_message = error_message
+        msg.result_json = result_json
         msg.data_json = self._json_dumps(data or {})
         msg.stamp = self.get_clock().now().to_msg()
         self._set_event_record(msg)
@@ -1602,11 +1705,16 @@ class TaskOrchestratorNode(Node):
         copied_event.task_id = event.task_id
         copied_event.task_name = event.task_name
         copied_event.source = event.source
+        copied_event.priority = event.priority
         copied_event.correlation_id = event.correlation_id
+        copied_event.created_at = event.created_at
+        copied_event.started_at = event.started_at
+        copied_event.finished_at = event.finished_at
         copied_event.previous_status = event.previous_status
-        copied_event.current_status = event.current_status
+        copied_event.status = event.status
         copied_event.error_code = event.error_code
         copied_event.error_message = event.error_message
+        copied_event.result_json = event.result_json
         copied_event.data_json = event.data_json
         copied_event.stamp = event.stamp
         return copied_event
@@ -1622,11 +1730,19 @@ class TaskOrchestratorNode(Node):
             correlation_id=result.correlation_id,
             progress=1.0,
             feedback={
-                "task_status": result.task_status,
+                "status": result.status,
                 "event_type": event_type,
                 "error_code": result.error_code,
                 "duration_sec": terminal_data["duration_sec"],
             },
+            priority=result.priority,
+            created_at=result.created_at,
+            started_at=result.started_at,
+            finished_at=result.finished_at,
+            status=result.status,
+            error_code=result.error_code,
+            error_message=result.error_message,
+            result_json=result.result_json,
         )
         self._publish_event(
             event_type=event_type,
@@ -1634,19 +1750,24 @@ class TaskOrchestratorNode(Node):
             task_name=result.task_name,
             source=result.source,
             correlation_id=result.correlation_id,
-            previous_status="" if result.task_status == TaskStatusV1.REJECTED else TaskStatusV1.IN_PROGRESS,
-            current_status=result.task_status,
+            previous_status="" if result.status == TaskStatusV1.REJECTED else TaskStatusV1.IN_PROGRESS,
+            status=result.status,
             error_code=result.error_code,
             error_message=result.error_message,
+            priority=result.priority,
+            created_at=result.created_at,
+            started_at=result.started_at,
+            finished_at=result.finished_at,
+            result_json=result.result_json,
             data=terminal_data,
         )
 
-    def _terminal_event_type(self, task_status: str) -> str:
-        if task_status == TaskStatusV1.DONE:
+    def _terminal_event_type(self, status: str) -> str:
+        if status == TaskStatusV1.DONE:
             return "task.completed"
-        if task_status == TaskStatusV1.CANCELED:
+        if status == TaskStatusV1.CANCELED:
             return "task.canceled"
-        if task_status == TaskStatusV1.REJECTED:
+        if status == TaskStatusV1.REJECTED:
             return "task.rejected"
         return "task.failed"
 
@@ -1668,11 +1789,11 @@ class TaskOrchestratorNode(Node):
 
     def _terminal_observability_data(self, result: ExecuteTaskV1.Result) -> dict[str, Any]:
         return {
-            "task_status": result.task_status,
+            "status": result.status,
             "error_code": result.error_code,
             "has_error": bool(result.error_code or result.error_message),
-            "has_result_json": bool(result.task_result_json and result.task_result_json != "{}"),
-            "result_size": len(result.task_result_json or ""),
+            "has_result_json": bool(result.result_json and result.result_json != "{}"),
+            "result_size": len(result.result_json or ""),
             "duration_sec": self._duration_sec(result.started_at, result.finished_at),
             "total_duration_sec": self._duration_sec(result.created_at, result.finished_at),
         }
@@ -1685,14 +1806,17 @@ class TaskOrchestratorNode(Node):
         duration = (finish_sec - start_sec) + ((finish_nanosec - start_nanosec) / 1_000_000_000.0)
         return max(0.0, duration)
 
+    def _time_is_set(self, value: Any) -> bool:
+        return bool(getattr(value, "sec", 0) or getattr(value, "nanosec", 0))
+
     def _json_dumps(self, payload: dict[str, Any]) -> str:
         return json.dumps(payload, sort_keys=True)
 
     def _log_task_event(self, event: TaskEventV1, data: dict[str, Any]) -> None:
         message = self._json_dumps(self._structured_log_payload(event, data))
-        if event.current_status == TaskStatusV1.ERROR:
+        if event.status == TaskStatusV1.ERROR:
             self.get_logger().error(message)
-        elif event.current_status == TaskStatusV1.REJECTED:
+        elif event.status == TaskStatusV1.REJECTED:
             self.get_logger().warning(message)
         else:
             self.get_logger().info(message)
@@ -1710,7 +1834,7 @@ class TaskOrchestratorNode(Node):
             "source": event.source,
             "correlation_id": event.correlation_id,
             "previous_status": event.previous_status,
-            "current_status": event.current_status,
+            "status": event.status,
             "error_code": event.error_code,
             "has_error": bool(event.error_code or event.error_message),
             "task_server_type": str(data.get("task_server_type", "")),
@@ -1729,24 +1853,25 @@ class TaskOrchestratorNode(Node):
         self,
         request: ExecuteTaskV1.Goal,
         task_id: str,
-        task_status: str,
+        status: str,
         created_at: Any,
         started_at: Any,
         finished_at: Any,
         error_code: str = "",
         error_message: str = "",
-        task_result_json: str = "{}",
+        result_json: str = "{}",
     ) -> ExecuteTaskV1.Result:
         result = ExecuteTaskV1.Result()
         result.api_version = self.api_version
         result.task_id = task_id
         result.task_name = request.task_name
         result.source = request.source
+        result.priority = request.priority
         result.correlation_id = request.correlation_id
-        result.task_status = task_status
+        result.status = status
         result.error_code = error_code
         result.error_message = error_message
-        result.task_result_json = task_result_json
+        result.result_json = result_json
         result.created_at = created_at
         result.started_at = started_at
         result.finished_at = finished_at
@@ -1755,6 +1880,9 @@ class TaskOrchestratorNode(Node):
     def _task_definition_to_msg(self, task: TaskDefinition) -> TaskSpecV1:
         msg = TaskSpecV1()
         msg.api_version = self.api_version
+        msg.source = "system"
+        msg.priority = task.priority_default
+        msg.result_json = "{}"
         msg.task_name = task.task_name
         msg.topic = task.topic
         msg.msg_interface = task.msg_interface
@@ -1778,9 +1906,12 @@ class TaskOrchestratorNode(Node):
         msg.source = task.source
         msg.correlation_id = task.correlation_id
         msg.priority = task.priority
-        msg.task_status = task.task_status
+        msg.status = task.status
         msg.created_at = task.created_at
         msg.started_at = task.started_at
+        msg.error_code = ""
+        msg.error_message = ""
+        msg.result_json = "{}"
         msg.tags = list(task.tags)
         return msg
 

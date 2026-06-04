@@ -15,7 +15,7 @@ class WaitTaskRequest:
 
 @dataclass(frozen=True)
 class WaitTaskResult:
-    task_result_json: str
+    result_json: str
 
 
 class WaitTaskValidationError(ValueError):
@@ -48,4 +48,4 @@ class WaitTaskExecutor:
 
     def execute(self, request: WaitTaskRequest) -> WaitTaskResult:
         self._sleep(request.duration_sec)
-        return WaitTaskResult(task_result_json=json.dumps({"duration_sec": request.duration_sec}, sort_keys=True))
+        return WaitTaskResult(result_json=json.dumps({"duration_sec": request.duration_sec}, sort_keys=True))

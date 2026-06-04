@@ -1,7 +1,7 @@
 string task_id
 string task_name
 string event_type
-string current_status
+string status
 string source
 string correlation_id
 uint32 limit

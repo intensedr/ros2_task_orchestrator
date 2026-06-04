@@ -62,7 +62,7 @@ class PreparedActionTask:
 class ActionTaskResult:
     """Normalized result returned by an action-backed task."""
 
-    task_result_json: str
+    result_json: str
 
 
 class ActionTaskClient:
@@ -113,7 +113,7 @@ class ActionTaskClient:
 
             if status == GoalStatus.STATUS_SUCCEEDED:
                 return ActionTaskResult(
-                    task_result_json=json.dumps(message_to_ordereddict(result_response.result), sort_keys=True)
+                    result_json=json.dumps(message_to_ordereddict(result_response.result), sort_keys=True)
                 )
             if status == GoalStatus.STATUS_CANCELED:
                 raise ActionTaskCanceled(f"action goal was canceled: {prepared.task.topic}")

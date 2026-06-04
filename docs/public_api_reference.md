@@ -13,19 +13,20 @@ Interface names are versioned with `V1` until the project reaches `v1.0`.
 
 ## Common Fields
 
-Public messages carry a common metadata shape where practical:
+Task-related public messages carry this common metadata shape. Constants-only
+messages such as `TaskStatusV1` and `ErrorCodeV1` are intentionally excluded:
 
-- `api_version`: API version string, initially `"v1alpha1"`.
+- `api_version`: API version string, initially `"v1beta1"`.
 - `task_id`: unique task execution ID.
 - `task_name`: configured task type name.
 - `source`: caller or system that requested the task.
-- `correlation_id`: caller-provided ID for tracing a workflow.
 - `priority`: higher value means higher priority.
+- `correlation_id`: caller-provided ID for tracing a workflow.
 - `created_at`, `started_at`, `finished_at`: ROS2 `builtin_interfaces/Time`.
 - `status`: one of the `TaskStatusV1` constants.
 - `error_code`: stable machine-readable error code.
 - `error_message`: human-readable diagnostic text.
-- `data_json`, `result_json`, `feedback_json`: JSON payloads.
+- `result_json`: JSON result payload.
 
 ## Status Values
 
@@ -70,8 +71,15 @@ string api_version
 string task_id
 string task_name
 string source
-string correlation_id
 int32 priority
+string correlation_id
+builtin_interfaces/Time created_at
+builtin_interfaces/Time started_at
+builtin_interfaces/Time finished_at
+string status
+string error_code
+string error_message
+string result_json
 string task_data_json
 string[] tags
 ---
@@ -79,19 +87,29 @@ string api_version
 string task_id
 string task_name
 string source
+int32 priority
 string correlation_id
-string task_status
-string error_code
-string error_message
-string task_result_json
 builtin_interfaces/Time created_at
 builtin_interfaces/Time started_at
 builtin_interfaces/Time finished_at
+string status
+string error_code
+string error_message
+string result_json
 ---
 string api_version
 string task_id
 string task_name
-string task_status
+string source
+int32 priority
+string correlation_id
+builtin_interfaces/Time created_at
+builtin_interfaces/Time started_at
+builtin_interfaces/Time finished_at
+string status
+string error_code
+string error_message
+string result_json
 float32 progress
 string feedback_json
 builtin_interfaces/Time stamp
@@ -114,17 +132,34 @@ string api_version
 string task_id
 string task_name
 string source
-string correlation_id
 int32 priority
-string task_status
+string correlation_id
 builtin_interfaces/Time created_at
 builtin_interfaces/Time started_at
+builtin_interfaces/Time finished_at
+string status
+string error_code
+string error_message
+string result_json
 string[] tags
 ```
 
 `msg/ActiveTaskArrayV1.msg`
 
 ```text
+string api_version
+string task_id
+string task_name
+string source
+int32 priority
+string correlation_id
+builtin_interfaces/Time created_at
+builtin_interfaces/Time started_at
+builtin_interfaces/Time finished_at
+string status
+string error_code
+string error_message
+string result_json
 ActiveTaskV1[] active_tasks
 builtin_interfaces/Time stamp
 ```
@@ -149,14 +184,15 @@ string api_version
 string task_id
 string task_name
 string source
+int32 priority
 string correlation_id
-string task_status
-string error_code
-string error_message
-string task_result_json
 builtin_interfaces/Time created_at
 builtin_interfaces/Time started_at
 builtin_interfaces/Time finished_at
+string status
+string error_code
+string error_message
+string result_json
 ```
 
 Topic:
@@ -182,11 +218,16 @@ string event_type
 string task_id
 string task_name
 string source
+int32 priority
 string correlation_id
-string previous_status
-string current_status
+builtin_interfaces/Time created_at
+builtin_interfaces/Time started_at
+builtin_interfaces/Time finished_at
+string status
 string error_code
 string error_message
+string result_json
+string previous_status
 string data_json
 builtin_interfaces/Time stamp
 ```
@@ -206,7 +247,15 @@ string api_version
 string task_id
 string task_name
 string source
+int32 priority
 string correlation_id
+builtin_interfaces/Time created_at
+builtin_interfaces/Time started_at
+builtin_interfaces/Time finished_at
+string status
+string error_code
+string error_message
+string result_json
 float32 progress
 string feedback_json
 builtin_interfaces/Time stamp
@@ -219,6 +268,8 @@ Topic:
 ```
 
 ## Services
+
+Primary public services:
 
 `srv/ListTasksV1.srv`
 
@@ -251,6 +302,36 @@ string error_code
 string error_message
 ```
 
+`srv/PauseTasksV1.srv`
+
+```text
+string[] task_ids
+string source
+string correlation_id
+---
+bool success
+string[] paused_task_ids
+string[] failed_task_ids
+string error_code
+string error_message
+```
+
+`srv/ResumeTasksV1.srv`
+
+```text
+string[] task_ids
+string source
+string correlation_id
+---
+bool success
+string[] resumed_task_ids
+string[] failed_task_ids
+string error_code
+string error_message
+```
+
+Additional V1 query/admin services:
+
 `srv/ReloadConfigV1.srv`
 
 ```text
@@ -266,7 +347,7 @@ string error_message
 string task_id
 string task_name
 string event_type
-string current_status
+string status
 string source
 string correlation_id
 uint32 limit
@@ -278,7 +359,7 @@ TaskEventV1[] events
 
 ```text
 string task_name
-string task_status
+string status
 string source
 string correlation_id
 uint32 limit
@@ -294,7 +375,7 @@ standard-library `sqlite3` module and a writable `storage.sqlite_path`.
 ```yaml
 task_orchestrator:
   ros__parameters:
-    api_version: "v1alpha1"
+    api_version: "v1beta1"
     enable_compatibility_aliases: false
     enable_debug_task_servers: false
     event_record_limit: 1000

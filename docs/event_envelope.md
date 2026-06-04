@@ -14,17 +14,22 @@ are documented in [Public API Reference](public_api_reference.md).
 
 ```json
 {
-  "api_version": "v1alpha1",
+  "api_version": "v1beta1",
   "event_id": "01J00000000000000000000000",
   "event_type": "task.started",
   "task_id": "7b3a8a8d-4c8f-4d87-8c75-5cf9eae71ab7",
   "task_name": "navigation/navigate_to_pose",
   "source": "fleet-agent",
+  "priority": 10,
   "correlation_id": "mission-2026-05-27-0001",
+  "created_at": "2026-05-27T11:59:58.000000Z",
+  "started_at": "2026-05-27T12:00:00.000000Z",
+  "finished_at": "",
   "previous_status": "QUEUED",
-  "current_status": "IN_PROGRESS",
+  "status": "IN_PROGRESS",
   "error_code": "",
   "error_message": "",
+  "result_json": "{}",
   "data": {
     "robot_id": "amr-042",
     "mission_id": "mission-2026-05-27-0001"

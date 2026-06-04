@@ -45,22 +45,23 @@ class SQLiteTaskStorage:
         self._connection.execute(
             """
             INSERT INTO task_records (
-                task_id, api_version, task_name, source, correlation_id,
-                task_status, error_code, error_message, task_result_json,
+                task_id, api_version, task_name, source, priority, correlation_id,
+                status, error_code, error_message, result_json,
                 task_data_json, tags_json, active, created_sec, created_nanosec,
                 started_sec, started_nanosec, finished_sec, finished_nanosec,
                 updated_at_ns
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 api_version = excluded.api_version,
                 task_name = excluded.task_name,
                 source = excluded.source,
+                priority = excluded.priority,
                 correlation_id = excluded.correlation_id,
-                task_status = excluded.task_status,
+                status = excluded.status,
                 error_code = excluded.error_code,
                 error_message = excluded.error_message,
-                task_result_json = excluded.task_result_json,
+                result_json = excluded.result_json,
                 task_data_json = excluded.task_data_json,
                 tags_json = excluded.tags_json,
                 active = excluded.active,
@@ -77,11 +78,12 @@ class SQLiteTaskStorage:
                 result.api_version,
                 result.task_name,
                 result.source,
+                result.priority,
                 result.correlation_id,
-                result.task_status,
+                result.status,
                 result.error_code,
                 result.error_message,
-                result.task_result_json,
+                result.result_json,
                 record.task_data_json,
                 json.dumps(list(record.tags), sort_keys=True),
                 1 if record.active else 0,
@@ -119,26 +121,39 @@ class SQLiteTaskStorage:
 
     def write_event(self, event: TaskEventV1) -> None:
         stamp_sec, stamp_nanosec = _time_to_pair(event.stamp)
+        created_sec, created_nanosec = _time_to_pair(event.created_at)
+        started_sec, started_nanosec = _time_to_pair(event.started_at)
+        finished_sec, finished_nanosec = _time_to_pair(event.finished_at)
         self._connection.execute(
             """
             INSERT INTO task_events (
                 event_id, api_version, event_type, task_id, task_name, source,
-                correlation_id, previous_status, current_status, error_code,
-                error_message, data_json, stamp_sec, stamp_nanosec,
+                priority, correlation_id, created_sec, created_nanosec,
+                started_sec, started_nanosec, finished_sec, finished_nanosec,
+                previous_status, status, error_code, error_message, result_json,
+                data_json, stamp_sec, stamp_nanosec,
                 stored_at_ns
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_id) DO UPDATE SET
                 api_version = excluded.api_version,
                 event_type = excluded.event_type,
                 task_id = excluded.task_id,
                 task_name = excluded.task_name,
                 source = excluded.source,
+                priority = excluded.priority,
                 correlation_id = excluded.correlation_id,
+                created_sec = excluded.created_sec,
+                created_nanosec = excluded.created_nanosec,
+                started_sec = excluded.started_sec,
+                started_nanosec = excluded.started_nanosec,
+                finished_sec = excluded.finished_sec,
+                finished_nanosec = excluded.finished_nanosec,
                 previous_status = excluded.previous_status,
-                current_status = excluded.current_status,
+                status = excluded.status,
                 error_code = excluded.error_code,
                 error_message = excluded.error_message,
+                result_json = excluded.result_json,
                 data_json = excluded.data_json,
                 stamp_sec = excluded.stamp_sec,
                 stamp_nanosec = excluded.stamp_nanosec,
@@ -151,11 +166,19 @@ class SQLiteTaskStorage:
                 event.task_id,
                 event.task_name,
                 event.source,
+                event.priority,
                 event.correlation_id,
+                created_sec,
+                created_nanosec,
+                started_sec,
+                started_nanosec,
+                finished_sec,
+                finished_nanosec,
                 event.previous_status,
-                event.current_status,
+                event.status,
                 event.error_code,
                 event.error_message,
+                event.result_json,
                 event.data_json,
                 stamp_sec,
                 stamp_nanosec,
@@ -185,11 +208,12 @@ class SQLiteTaskStorage:
                 api_version TEXT NOT NULL,
                 task_name TEXT NOT NULL,
                 source TEXT NOT NULL,
+                priority INTEGER NOT NULL,
                 correlation_id TEXT NOT NULL,
-                task_status TEXT NOT NULL,
+                status TEXT NOT NULL,
                 error_code TEXT NOT NULL,
                 error_message TEXT NOT NULL,
-                task_result_json TEXT NOT NULL,
+                result_json TEXT NOT NULL,
                 task_data_json TEXT NOT NULL,
                 tags_json TEXT NOT NULL,
                 active INTEGER NOT NULL,
@@ -213,11 +237,19 @@ class SQLiteTaskStorage:
                 task_id TEXT NOT NULL,
                 task_name TEXT NOT NULL,
                 source TEXT NOT NULL,
+                priority INTEGER NOT NULL,
                 correlation_id TEXT NOT NULL,
+                created_sec INTEGER NOT NULL,
+                created_nanosec INTEGER NOT NULL,
+                started_sec INTEGER NOT NULL,
+                started_nanosec INTEGER NOT NULL,
+                finished_sec INTEGER NOT NULL,
+                finished_nanosec INTEGER NOT NULL,
                 previous_status TEXT NOT NULL,
-                current_status TEXT NOT NULL,
+                status TEXT NOT NULL,
                 error_code TEXT NOT NULL,
                 error_message TEXT NOT NULL,
+                result_json TEXT NOT NULL,
                 data_json TEXT NOT NULL,
                 stamp_sec INTEGER NOT NULL,
                 stamp_nanosec INTEGER NOT NULL,
@@ -226,6 +258,45 @@ class SQLiteTaskStorage:
             """
         )
         self._connection.commit()
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        self._ensure_column("task_records", "priority", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("task_records", "status", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("task_records", "result_json", "TEXT NOT NULL DEFAULT '{}'")
+        record_columns = self._table_columns("task_records")
+        if "task_status" in record_columns:
+            self._connection.execute("UPDATE task_records SET status = task_status WHERE status = ''")
+        if "task_result_json" in record_columns:
+            self._connection.execute(
+                "UPDATE task_records SET result_json = task_result_json WHERE result_json = '{}'"
+            )
+
+        for column_name in (
+            "priority",
+            "created_sec",
+            "created_nanosec",
+            "started_sec",
+            "started_nanosec",
+            "finished_sec",
+            "finished_nanosec",
+        ):
+            self._ensure_column("task_events", column_name, "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("task_events", "status", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("task_events", "result_json", "TEXT NOT NULL DEFAULT '{}'")
+        event_columns = self._table_columns("task_events")
+        if "current_status" in event_columns:
+            self._connection.execute("UPDATE task_events SET status = current_status WHERE status = ''")
+        self._connection.commit()
+
+    def _ensure_column(self, table_name: str, column_name: str, column_sql: str) -> None:
+        if column_name in self._table_columns(table_name):
+            return
+        self._connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
+
+    def _table_columns(self, table_name: str) -> set[str]:
+        rows = self._connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {str(row["name"]) for row in rows}
 
     def _enforce_retention(self) -> None:
         if self._retention_days <= 0:
@@ -241,9 +312,9 @@ class SQLiteTaskStorage:
         if request.task_name:
             filters.append("task_name = ?")
             values.append(request.task_name)
-        if request.task_status:
-            filters.append("task_status = ?")
-            values.append(request.task_status)
+        if request.status:
+            filters.append("status = ?")
+            values.append(request.status)
         if request.source:
             filters.append("source = ?")
             values.append(request.source)
@@ -264,9 +335,9 @@ class SQLiteTaskStorage:
         if request.event_type:
             filters.append("event_type = ?")
             values.append(request.event_type)
-        if request.current_status:
-            filters.append("current_status = ?")
-            values.append(request.current_status)
+        if request.status:
+            filters.append("status = ?")
+            values.append(request.status)
         if request.source:
             filters.append("source = ?")
             values.append(request.source)
@@ -281,11 +352,12 @@ class SQLiteTaskStorage:
         result.task_id = row["task_id"]
         result.task_name = row["task_name"]
         result.source = row["source"]
+        result.priority = row["priority"]
         result.correlation_id = row["correlation_id"]
-        result.task_status = row["task_status"]
+        result.status = row["status"]
         result.error_code = row["error_code"]
         result.error_message = row["error_message"]
-        result.task_result_json = row["task_result_json"]
+        result.result_json = row["result_json"]
         result.created_at = _pair_to_time(row["created_sec"], row["created_nanosec"])
         result.started_at = _pair_to_time(row["started_sec"], row["started_nanosec"])
         result.finished_at = _pair_to_time(row["finished_sec"], row["finished_nanosec"])
@@ -295,6 +367,7 @@ class SQLiteTaskStorage:
         record.active = bool(row["active"])
         record.task_data_json = row["task_data_json"]
         record.tags = list(json.loads(row["tags_json"]))
+        _sync_task_record_metadata(record)
         return record
 
     def _row_to_task_event(self, row: sqlite3.Row) -> TaskEventV1:
@@ -305,11 +378,16 @@ class SQLiteTaskStorage:
         event.task_id = row["task_id"]
         event.task_name = row["task_name"]
         event.source = row["source"]
+        event.priority = row["priority"]
         event.correlation_id = row["correlation_id"]
+        event.created_at = _pair_to_time(row["created_sec"], row["created_nanosec"])
+        event.started_at = _pair_to_time(row["started_sec"], row["started_nanosec"])
+        event.finished_at = _pair_to_time(row["finished_sec"], row["finished_nanosec"])
         event.previous_status = row["previous_status"]
-        event.current_status = row["current_status"]
+        event.status = row["status"]
         event.error_code = row["error_code"]
         event.error_message = row["error_message"]
+        event.result_json = row["result_json"]
         event.data_json = row["data_json"]
         event.stamp = _pair_to_time(row["stamp_sec"], row["stamp_nanosec"])
         return event
@@ -317,6 +395,23 @@ class SQLiteTaskStorage:
 
 def _where_clause(filters: list[str]) -> str:
     return " WHERE " + " AND ".join(filters) if filters else ""
+
+
+def _sync_task_record_metadata(record: TaskRecordV1) -> None:
+    result = record.result
+    record.api_version = result.api_version
+    record.task_id = result.task_id
+    record.task_name = result.task_name
+    record.source = result.source
+    record.priority = result.priority
+    record.correlation_id = result.correlation_id
+    record.created_at = result.created_at
+    record.started_at = result.started_at
+    record.finished_at = result.finished_at
+    record.status = result.status
+    record.error_code = result.error_code
+    record.error_message = result.error_message
+    record.result_json = result.result_json
 
 
 def _time_to_pair(value: Time) -> tuple[int, int]:

@@ -2,7 +2,15 @@ string api_version
 string task_id
 string task_name
 string source
+int32 priority
 string correlation_id
+builtin_interfaces/Time created_at
+builtin_interfaces/Time started_at
+builtin_interfaces/Time finished_at
+string status
+string error_code
+string error_message
+string result_json
 float32 progress
 string feedback_json
 builtin_interfaces/Time stamp

@@ -17,13 +17,16 @@ The public API is defined by `task_orchestrator_msgs`.
 
 - `/task_orchestrator/list_tasks`: `ListTasksV1`
 - `/task_orchestrator/get_task`: `GetTaskV1`
-- `/task_orchestrator/list_task_records`: `ListTaskRecordsV1`
-- `/task_orchestrator/list_events`: `ListEventsV1`
 - `/task_orchestrator/cancel_tasks`: `CancelTasksV1`
-- `/task_orchestrator/stop`: `StopTasksV1`
-- `/task_orchestrator/reload_config`: `ReloadConfigV1`
 - `/task_orchestrator/pause_tasks`: `PauseTasksV1`
 - `/task_orchestrator/resume_tasks`: `ResumeTasksV1`
+
+Additional V1 query/admin endpoints:
+
+- `/task_orchestrator/list_task_records`: `ListTaskRecordsV1`
+- `/task_orchestrator/list_events`: `ListEventsV1`
+- `/task_orchestrator/stop`: `StopTasksV1`
+- `/task_orchestrator/reload_config`: `ReloadConfigV1`
 
 ## Built-In System Tasks
 

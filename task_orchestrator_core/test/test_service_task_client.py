@@ -55,7 +55,7 @@ def test_service_task_client_converts_json_request_and_response():
     assert prepared.request.data is True
     assert fake_client.request.data is True
     assert fake_client.timeout_sec == 3.0
-    assert result.task_result_json == '{"message": "ok", "success": true}'
+    assert result.result_json == '{"message": "ok", "success": true}'
 
 
 def test_service_task_client_rejects_invalid_json():

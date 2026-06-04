@@ -43,7 +43,7 @@ def _stop_executor(executor, thread, *nodes):
 
 def _make_goal(task_id: str, task_name: str, task_data_json: str) -> ExecuteTaskV1.Goal:
     goal = ExecuteTaskV1.Goal()
-    goal.api_version = "v1alpha1"
+    goal.api_version = "v1beta1"
     goal.task_id = task_id
     goal.task_name = task_name
     goal.source = "integration-test"
@@ -83,10 +83,10 @@ def test_execute_system_wait_through_ros_action_api(tmp_path):
 
         time.sleep(0.1)
 
-        assert result_response.result.task_status == TaskStatusV1.DONE
-        assert result_response.result.task_result_json == '{"duration_sec": 0.0}'
+        assert result_response.result.status == TaskStatusV1.DONE
+        assert result_response.result.result_json == '{"duration_sec": 0.0}'
         assert [result.task_id for result in results] == ["wait-api-task"]
-        assert results[0].task_status == TaskStatusV1.DONE
+        assert results[0].status == TaskStatusV1.DONE
     finally:
         _stop_executor(executor, thread, orchestrator, client_node)
 
@@ -111,7 +111,7 @@ def test_late_client_recovers_task_records_and_events(tmp_path):
             timeout_sec=2.0,
         )
         result_response = _wait_for_future(goal_handle.get_result_async(), timeout_sec=2.0)
-        assert result_response.result.task_status == TaskStatusV1.DONE
+        assert result_response.result.status == TaskStatusV1.DONE
 
         late_client_node = rclpy.create_node("task_orchestrator_late_client_test")
         executor.add_node(late_client_node)
@@ -136,7 +136,7 @@ def test_late_client_recovers_task_records_and_events(tmp_path):
         )
 
         assert [record.result.task_id for record in records_response.records] == ["recovery-task"]
-        assert records_response.records[0].result.task_status == TaskStatusV1.DONE
+        assert records_response.records[0].result.status == TaskStatusV1.DONE
         assert [event.event_type for event in events_response.events] == [
             "task.completed",
             "task.started",
@@ -185,9 +185,9 @@ def test_execute_service_backed_task_through_ros_action_api(tmp_path):
             timeout_sec=2.0,
         )
         result_response = _wait_for_future(goal_handle.get_result_async(), timeout_sec=2.0)
-        result_payload = json.loads(result_response.result.task_result_json)
+        result_payload = json.loads(result_response.result.result_json)
 
-        assert result_response.result.task_status == TaskStatusV1.DONE
+        assert result_response.result.status == TaskStatusV1.DONE
         assert result_payload == {"message": "enabled", "success": True}
     finally:
         _stop_executor(executor, thread, orchestrator, client_node, service_node)

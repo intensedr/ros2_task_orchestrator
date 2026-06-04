@@ -20,7 +20,7 @@ class ActiveTaskEntry:
     source: str
     correlation_id: str
     priority: int
-    task_status: str
+    status: str
     created_at: Any
     started_at: Any
     tags: tuple[str, ...]

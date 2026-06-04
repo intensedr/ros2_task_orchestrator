@@ -37,7 +37,7 @@ class MissionSubtaskResult:
     subtask_id: str
     task_id: str
     task_name: str
-    task_status: str
+    status: str
     skipped: bool
     attempts: int
     error_code: str = ""
@@ -74,7 +74,7 @@ class MissionTaskParser:
     def result_json(
         self,
         mission_id: str,
-        task_status: str,
+        status: str,
         mission_results: list[MissionSubtaskResult],
         error_code: str = "",
         error_message: str = "",
@@ -82,7 +82,7 @@ class MissionTaskParser:
         return json.dumps(
             {
                 "mission_id": mission_id,
-                "task_status": task_status,
+                "status": status,
                 "error_code": error_code,
                 "error_message": error_message,
                 "mission_results": [
@@ -90,7 +90,7 @@ class MissionTaskParser:
                         "subtask_id": result.subtask_id,
                         "task_id": result.task_id,
                         "task_name": result.task_name,
-                        "task_status": result.task_status,
+                        "status": result.status,
                         "skipped": result.skipped,
                         "attempts": result.attempts,
                         "error_code": result.error_code,
@@ -151,7 +151,7 @@ class MissionTaskParser:
         )
 
 
-def mission_status_from_subtask_status(task_status: str) -> str:
-    if task_status == TaskStatusV1.CANCELED:
+def mission_status_from_subtask_result_status(status: str) -> str:
+    if status == TaskStatusV1.CANCELED:
         return TaskStatusV1.CANCELED
     return TaskStatusV1.ERROR

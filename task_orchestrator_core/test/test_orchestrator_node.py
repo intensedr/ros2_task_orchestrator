@@ -39,7 +39,7 @@ class FakeGoalHandle:
 
 class FakeServiceTaskClient:
     def __init__(self, result=None, error=None):
-        self.result = result or ServiceTaskResult(task_result_json='{"message": "ok", "success": true}')
+        self.result = result or ServiceTaskResult(result_json='{"message": "ok", "success": true}')
         self.error = error
         self.prepared = "prepared-service-task"
 
@@ -57,7 +57,7 @@ class FakeServiceTaskClient:
 
 class FakeActionTaskClient:
     def __init__(self, result=None, error=None):
-        self.result = result or ActionTaskResult(task_result_json='{"sequence": [1, 1, 2]}')
+        self.result = result or ActionTaskResult(result_json='{"sequence": [1, 1, 2]}')
         self.error = error
         self.prepared = "prepared-action-task"
 
@@ -150,7 +150,7 @@ def test_get_task_returns_finished_task_record(tmp_path):
         assert get_response.found is True
         assert get_response.task.active is False
         assert get_response.task.result.task_id == "wait-task"
-        assert get_response.task.result.task_status == TaskStatusV1.DONE
+        assert get_response.task.result.status == TaskStatusV1.DONE
         assert get_response.task.task_data_json == '{"duration_sec": 0}'
         assert get_response.task.tags == ["test"]
     finally:
@@ -162,13 +162,13 @@ def test_get_task_returns_active_task_record(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="active-task",
                 task_name="example/fibonacci",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=("active",),
@@ -183,7 +183,7 @@ def test_get_task_returns_active_task_record(tmp_path):
 
         assert response.found is True
         assert response.task.active is True
-        assert response.task.result.task_status == TaskStatusV1.IN_PROGRESS
+        assert response.task.result.status == TaskStatusV1.IN_PROGRESS
         assert response.task.tags == ["active"]
     finally:
         _destroy_node(node)
@@ -228,7 +228,7 @@ def test_task_record_limit_evicts_old_terminal_records(tmp_path):
         assert list(node._task_records) == ["wait-task-1", "wait-task-2"]
         assert missing_response.found is False
         assert present_response.found is True
-        assert present_response.task.result.task_status == TaskStatusV1.DONE
+        assert present_response.task.result.status == TaskStatusV1.DONE
     finally:
         _destroy_node(node)
 
@@ -238,13 +238,13 @@ def test_task_record_limit_preserves_active_records(tmp_path):
     node._task_record_limit = 0
     try:
         active_task = ActiveTaskEntry(
-            api_version="v1alpha1",
+            api_version="v1beta1",
             task_id="active-task",
             task_name="example/fibonacci",
             source="test",
             correlation_id="corr-1",
             priority=0,
-            task_status=TaskStatusV1.IN_PROGRESS,
+            status=TaskStatusV1.IN_PROGRESS,
             created_at=node.get_clock().now().to_msg(),
             started_at=node.get_clock().now().to_msg(),
             tags=("active",),
@@ -276,7 +276,7 @@ def test_event_record_limit_evicts_old_events(tmp_path):
                 task_name="system/wait",
                 source="test",
                 correlation_id="corr-1",
-                current_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
             )
 
         list_request = ListEventsV1.Request()
@@ -299,7 +299,7 @@ def test_list_events_filters_and_limits_newest_first(tmp_path):
             task_name="system/wait",
             source="scheduler",
             correlation_id="corr-1",
-            current_status=TaskStatusV1.IN_PROGRESS,
+            status=TaskStatusV1.IN_PROGRESS,
         )
         node._publish_event(
             event_type="task.completed",
@@ -307,7 +307,7 @@ def test_list_events_filters_and_limits_newest_first(tmp_path):
             task_name="system/wait",
             source="scheduler",
             correlation_id="corr-1",
-            current_status=TaskStatusV1.DONE,
+            status=TaskStatusV1.DONE,
         )
         node._publish_event(
             event_type="task.rejected",
@@ -315,7 +315,7 @@ def test_list_events_filters_and_limits_newest_first(tmp_path):
             task_name="missing/task",
             source="operator",
             correlation_id="corr-2",
-            current_status=TaskStatusV1.REJECTED,
+            status=TaskStatusV1.REJECTED,
             error_code=ErrorCodeV1.UNKNOWN_TASK,
         )
 
@@ -328,7 +328,7 @@ def test_list_events_filters_and_limits_newest_first(tmp_path):
         list_response = node._list_events(list_request, list_response)
 
         assert [event.event_type for event in list_response.events] == ["task.completed"]
-        assert list_response.events[0].current_status == TaskStatusV1.DONE
+        assert list_response.events[0].status == TaskStatusV1.DONE
     finally:
         _destroy_node(node)
 
@@ -343,7 +343,7 @@ def test_event_record_limit_zero_disables_event_history(tmp_path):
             task_name="system/wait",
             source="test",
             correlation_id="corr-1",
-            current_status=TaskStatusV1.IN_PROGRESS,
+            status=TaskStatusV1.IN_PROGRESS,
         )
         list_request = ListEventsV1.Request()
         list_response = ListEventsV1.Response()
@@ -377,7 +377,7 @@ def test_sqlite_storage_persists_task_records_and_events_when_enabled(tmp_path):
 
         result = node._execute_task_cb(FakeGoalHandle(request))
 
-        assert result.task_status == TaskStatusV1.DONE
+        assert result.status == TaskStatusV1.DONE
     finally:
         _destroy_node(node)
 
@@ -391,7 +391,7 @@ def test_sqlite_storage_persists_task_records_and_events_when_enabled(tmp_path):
         events = storage.list_events(events_request)
 
         assert [record.result.task_id for record in records] == ["stored-task"]
-        assert records[0].result.task_status == TaskStatusV1.DONE
+        assert records[0].result.status == TaskStatusV1.DONE
         assert records[0].task_data_json == '{"duration_sec": 0}'
         assert [event.event_type for event in events] == [
             "task.completed",
@@ -406,7 +406,7 @@ def test_structured_log_payload_has_consistent_schema(tmp_path):
     node = _make_node(tmp_path)
     try:
         event = TaskEventV1()
-        event.api_version = "v1alpha1"
+        event.api_version = "v1beta1"
         event.event_id = "event-1"
         event.event_type = "mission.completed"
         event.task_id = "mission-task"
@@ -414,7 +414,7 @@ def test_structured_log_payload_has_consistent_schema(tmp_path):
         event.source = "test"
         event.correlation_id = "corr-1"
         event.previous_status = TaskStatusV1.IN_PROGRESS
-        event.current_status = TaskStatusV1.DONE
+        event.status = TaskStatusV1.DONE
 
         payload = node._structured_log_payload(
             event,
@@ -458,12 +458,12 @@ def test_list_task_records_returns_newest_first_with_limit(tmp_path):
         list_response = node._list_task_records(list_request, list_response)
 
         assert [record.result.task_id for record in list_response.records] == ["wait-task-2", "wait-task-1"]
-        assert all(record.result.task_status == TaskStatusV1.DONE for record in list_response.records)
+        assert all(record.result.status == TaskStatusV1.DONE for record in list_response.records)
     finally:
         _destroy_node(node)
 
 
-def test_list_task_records_filters_by_task_status_and_source(tmp_path):
+def test_list_task_records_filters_by_status_and_source(tmp_path):
     node = _make_node(tmp_path)
     node._wait_task = WaitTaskExecutor(sleep=lambda _: None)
     try:
@@ -482,7 +482,7 @@ def test_list_task_records_filters_by_task_status_and_source(tmp_path):
 
         list_request = ListTaskRecordsV1.Request()
         list_response = ListTaskRecordsV1.Response()
-        list_request.task_status = TaskStatusV1.REJECTED
+        list_request.status = TaskStatusV1.REJECTED
         list_request.source = "operator"
 
         list_response = node._list_task_records(list_request, list_response)
@@ -498,13 +498,13 @@ def test_list_task_records_includes_active_records_missing_from_cache(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="active-task",
                 task_name="example/fibonacci",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=("active",),
@@ -513,7 +513,7 @@ def test_list_task_records_includes_active_records_missing_from_cache(tmp_path):
         )
         list_request = ListTaskRecordsV1.Request()
         list_response = ListTaskRecordsV1.Response()
-        list_request.task_status = TaskStatusV1.IN_PROGRESS
+        list_request.status = TaskStatusV1.IN_PROGRESS
 
         list_response = node._list_task_records(list_request, list_response)
 
@@ -608,12 +608,12 @@ def test_execute_unknown_task_is_rejected(tmp_path):
         terminal_feedback = json.loads(feedback_pub.messages[-1].feedback_json)
 
         assert goal_handle.state == "aborted"
-        assert result.task_status == TaskStatusV1.REJECTED
+        assert result.status == TaskStatusV1.REJECTED
         assert result.error_code == ErrorCodeV1.UNKNOWN_TASK
         assert result.task_id
-        assert rejected_event_data["task_status"] == TaskStatusV1.REJECTED
+        assert rejected_event_data["status"] == TaskStatusV1.REJECTED
         assert rejected_event_data["has_error"] is True
-        assert terminal_feedback["task_status"] == TaskStatusV1.REJECTED
+        assert terminal_feedback["status"] == TaskStatusV1.REJECTED
         assert terminal_feedback["error_code"] == ErrorCodeV1.UNKNOWN_TASK
     finally:
         _destroy_node(node)
@@ -637,8 +637,8 @@ def test_execute_system_wait_succeeds_and_clears_active_task(tmp_path):
         result = node._execute_task_cb(goal_handle)
 
         assert goal_handle.state == "succeeded"
-        assert result.task_status == TaskStatusV1.DONE
-        assert result.task_result_json == '{"duration_sec": 2.0}'
+        assert result.status == TaskStatusV1.DONE
+        assert result.result_json == '{"duration_sec": 2.0}'
         assert sleeps == [2.0]
         assert len(node._active_tasks) == 0
 
@@ -654,13 +654,13 @@ def test_execute_system_wait_succeeds_and_clears_active_task(tmp_path):
         assert received_data["tags"] == ["observable"]
         assert started_data["task_server_type"] == "system/wait"
         assert started_data["reentrant"] is True
-        assert completed_data["task_status"] == TaskStatusV1.DONE
+        assert completed_data["status"] == TaskStatusV1.DONE
         assert completed_data["has_result_json"] is True
         assert completed_data["duration_sec"] >= 0.0
 
         assert [feedback.progress for feedback in feedback_pub.messages] == [0.0, 1.0]
-        assert json.loads(feedback_pub.messages[0].feedback_json)["task_status"] == TaskStatusV1.IN_PROGRESS
-        assert json.loads(feedback_pub.messages[1].feedback_json)["task_status"] == TaskStatusV1.DONE
+        assert json.loads(feedback_pub.messages[0].feedback_json)["status"] == TaskStatusV1.IN_PROGRESS
+        assert json.loads(feedback_pub.messages[1].feedback_json)["status"] == TaskStatusV1.DONE
     finally:
         _destroy_node(node)
 
@@ -681,7 +681,7 @@ def test_done_terminal_result_and_event_are_published_once(tmp_path):
         result = node._execute_task_cb(FakeGoalHandle(request))
 
         terminal_events = [event for event in events_pub.messages if event.event_type in TERMINAL_EVENT_TYPES]
-        assert result.task_status == TaskStatusV1.DONE
+        assert result.status == TaskStatusV1.DONE
         assert [msg.task_id for msg in results_pub.messages] == ["done-task"]
         assert [event.event_type for event in terminal_events] == ["task.completed"]
     finally:
@@ -714,7 +714,7 @@ def test_error_terminal_result_and_event_are_published_once(tmp_path):
         result = node._execute_task_cb(FakeGoalHandle(request))
 
         terminal_events = [event for event in events_pub.messages if event.event_type in TERMINAL_EVENT_TYPES]
-        assert result.task_status == TaskStatusV1.ERROR
+        assert result.status == TaskStatusV1.ERROR
         assert [msg.task_id for msg in results_pub.messages] == ["error-task"]
         assert [event.event_type for event in terminal_events] == ["task.failed"]
     finally:
@@ -735,7 +735,7 @@ def test_rejected_terminal_result_and_event_are_published_once(tmp_path):
         result = node._execute_task_cb(FakeGoalHandle(request))
 
         terminal_events = [event for event in events_pub.messages if event.event_type in TERMINAL_EVENT_TYPES]
-        assert result.task_status == TaskStatusV1.REJECTED
+        assert result.status == TaskStatusV1.REJECTED
         assert [msg.task_id for msg in results_pub.messages] == ["rejected-task"]
         assert [event.event_type for event in terminal_events] == ["task.rejected"]
     finally:
@@ -766,7 +766,7 @@ def test_canceled_terminal_result_and_event_are_published_once(tmp_path):
         result = node._execute_task_cb(FakeGoalHandle(request))
 
         terminal_events = [event for event in events_pub.messages if event.event_type in TERMINAL_EVENT_TYPES]
-        assert result.task_status == TaskStatusV1.CANCELED
+        assert result.status == TaskStatusV1.CANCELED
         assert [msg.task_id for msg in results_pub.messages] == ["canceled-task"]
         assert [event.event_type for event in terminal_events] == ["task.canceled"]
     finally:
@@ -793,8 +793,8 @@ def test_execute_service_task_succeeds_and_clears_active_task(tmp_path):
         result = node._execute_task_cb(goal_handle)
 
         assert goal_handle.state == "succeeded"
-        assert result.task_status == TaskStatusV1.DONE
-        assert result.task_result_json == '{"message": "ok", "success": true}'
+        assert result.status == TaskStatusV1.DONE
+        assert result.result_json == '{"message": "ok", "success": true}'
         assert len(node._active_tasks) == 0
     finally:
         _destroy_node(node)
@@ -822,7 +822,7 @@ def test_execute_service_task_reports_unavailable_server(tmp_path):
         result = node._execute_task_cb(goal_handle)
 
         assert goal_handle.state == "aborted"
-        assert result.task_status == TaskStatusV1.ERROR
+        assert result.status == TaskStatusV1.ERROR
         assert result.error_code == ErrorCodeV1.SERVER_UNAVAILABLE
         assert len(node._active_tasks) == 0
     finally:
@@ -849,8 +849,8 @@ def test_execute_action_task_succeeds_and_clears_active_task(tmp_path):
         result = node._execute_task_cb(goal_handle)
 
         assert goal_handle.state == "succeeded"
-        assert result.task_status == TaskStatusV1.DONE
-        assert result.task_result_json == '{"sequence": [1, 1, 2]}'
+        assert result.status == TaskStatusV1.DONE
+        assert result.result_json == '{"sequence": [1, 1, 2]}'
         assert len(node._active_tasks) == 0
     finally:
         _destroy_node(node)
@@ -878,7 +878,7 @@ def test_execute_action_task_reports_unavailable_server(tmp_path):
         result = node._execute_task_cb(goal_handle)
 
         assert goal_handle.state == "aborted"
-        assert result.task_status == TaskStatusV1.ERROR
+        assert result.status == TaskStatusV1.ERROR
         assert result.error_code == ErrorCodeV1.SERVER_UNAVAILABLE
         assert len(node._active_tasks) == 0
     finally:
@@ -905,7 +905,7 @@ def test_execute_action_task_reports_canceled_by_default(tmp_path):
         result = node._execute_task_cb(goal_handle)
 
         assert goal_handle.state == "aborted"
-        assert result.task_status == TaskStatusV1.CANCELED
+        assert result.status == TaskStatusV1.CANCELED
         assert result.error_message == "action goal was canceled"
         assert len(node._active_tasks) == 0
     finally:
@@ -933,7 +933,7 @@ def test_execute_action_task_can_report_cancel_as_success(tmp_path):
         result = node._execute_task_cb(goal_handle)
 
         assert goal_handle.state == "succeeded"
-        assert result.task_status == TaskStatusV1.DONE
+        assert result.status == TaskStatusV1.DONE
         assert result.error_message == ""
         assert len(node._active_tasks) == 0
     finally:
@@ -948,13 +948,13 @@ def test_cancel_tasks_cancels_matching_active_task(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="task-1",
                 task_name="example/fibonacci",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -991,13 +991,13 @@ def test_execute_task_action_cancel_callback_cancels_active_task(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="task-1",
                 task_name="example/fibonacci",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1023,13 +1023,13 @@ def test_execute_task_action_cancel_callback_rejects_noncancelable_task(tmp_path
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="task-1",
                 task_name="example/set_bool",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1054,13 +1054,13 @@ def test_cancel_tasks_reports_noncancelable_task(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="task-1",
                 task_name="example/set_bool",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1091,13 +1091,13 @@ def test_stop_tasks_uses_cancel_on_stop(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="stop-me",
                 task_name="example/fibonacci",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1108,13 +1108,13 @@ def test_stop_tasks_uses_cancel_on_stop(tmp_path):
         )
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="keep-me",
                 task_name="example/fibonacci",
                 source="test",
                 correlation_id="corr-2",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1151,13 +1151,13 @@ def test_execute_system_cancel_task_cancels_active_task_despite_blocking_policy(
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="blocking-task",
                 task_name="example/fibonacci",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1174,10 +1174,10 @@ def test_execute_system_cancel_task_cancels_active_task_despite_blocking_policy(
         goal_handle = FakeGoalHandle(request)
 
         result = node._execute_task_cb(goal_handle)
-        payload = json.loads(result.task_result_json)
+        payload = json.loads(result.result_json)
 
         assert goal_handle.state == "succeeded"
-        assert result.task_status == TaskStatusV1.DONE
+        assert result.status == TaskStatusV1.DONE
         assert payload["success"] is True
         assert payload["canceled_task_ids"] == ["blocking-task"]
         assert payload["failed_task_ids"] == []
@@ -1198,13 +1198,13 @@ def test_execute_system_cancel_task_reports_noncancelable_active_task(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="service-task",
                 task_name="example/set_bool",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1220,10 +1220,10 @@ def test_execute_system_cancel_task_reports_noncancelable_active_task(tmp_path):
         goal_handle = FakeGoalHandle(request)
 
         result = node._execute_task_cb(goal_handle)
-        payload = json.loads(result.task_result_json)
+        payload = json.loads(result.result_json)
 
         assert goal_handle.state == "aborted"
-        assert result.task_status == TaskStatusV1.ERROR
+        assert result.status == TaskStatusV1.ERROR
         assert result.error_code == ErrorCodeV1.TASK_CANCEL_FAILED
         assert payload["success"] is False
         assert payload["canceled_task_ids"] == []
@@ -1240,13 +1240,13 @@ def test_execute_system_stop_task_stops_cancel_on_stop_tasks(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="stop-me",
                 task_name="example/fibonacci",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1258,13 +1258,13 @@ def test_execute_system_stop_task_stops_cancel_on_stop_tasks(tmp_path):
         )
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="keep-me",
                 task_name="example/fibonacci",
                 source="test",
                 correlation_id="corr-2",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1280,10 +1280,10 @@ def test_execute_system_stop_task_stops_cancel_on_stop_tasks(tmp_path):
         goal_handle = FakeGoalHandle(request)
 
         result = node._execute_task_cb(goal_handle)
-        payload = json.loads(result.task_result_json)
+        payload = json.loads(result.result_json)
 
         assert goal_handle.state == "succeeded"
-        assert result.task_status == TaskStatusV1.DONE
+        assert result.status == TaskStatusV1.DONE
         assert payload["success"] is True
         assert payload["stopped_task_ids"] == ["stop-me"]
         assert stopped == ["stop-me"]
@@ -1303,13 +1303,13 @@ def test_blocking_active_task_rejects_new_task(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="blocking-task",
                 task_name="example/blocking",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1327,7 +1327,7 @@ def test_blocking_active_task_rejects_new_task(tmp_path):
         result = node._execute_task_cb(goal_handle)
 
         assert goal_handle.state == "aborted"
-        assert result.task_status == TaskStatusV1.REJECTED
+        assert result.status == TaskStatusV1.REJECTED
         assert result.error_code == ErrorCodeV1.RESOURCE_CONFLICT
     finally:
         _destroy_node(node)
@@ -1340,13 +1340,13 @@ def test_reentrant_task_allows_same_task_name(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="existing-wait",
                 task_name="system/wait",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1364,7 +1364,7 @@ def test_reentrant_task_allows_same_task_name(tmp_path):
         result = node._execute_task_cb(goal_handle)
 
         assert goal_handle.state == "succeeded"
-        assert result.task_status == TaskStatusV1.DONE
+        assert result.status == TaskStatusV1.DONE
         assert sleeps == [0.0]
         assert node._active_tasks.get("existing-wait") is not None
     finally:
@@ -1387,13 +1387,13 @@ def test_nonreentrant_task_replaces_cancelable_same_type_task(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="old-task",
                 task_name="example/fibonacci",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1412,7 +1412,7 @@ def test_nonreentrant_task_replaces_cancelable_same_type_task(tmp_path):
         result = node._execute_task_cb(goal_handle)
 
         assert goal_handle.state == "succeeded"
-        assert result.task_status == TaskStatusV1.DONE
+        assert result.status == TaskStatusV1.DONE
         assert canceled == ["old-task"]
         assert node._active_tasks.get("old-task") is not None
         assert node._active_tasks.get("new-task") is None
@@ -1434,13 +1434,13 @@ def test_nonreentrant_task_rejects_noncancelable_same_type_task(tmp_path):
     try:
         node._active_tasks.add(
             ActiveTaskEntry(
-                api_version="v1alpha1",
+                api_version="v1beta1",
                 task_id="old-task",
                 task_name="example/set_bool",
                 source="test",
                 correlation_id="corr-1",
                 priority=0,
-                task_status=TaskStatusV1.IN_PROGRESS,
+                status=TaskStatusV1.IN_PROGRESS,
                 created_at=node.get_clock().now().to_msg(),
                 started_at=node.get_clock().now().to_msg(),
                 tags=(),
@@ -1459,7 +1459,7 @@ def test_nonreentrant_task_rejects_noncancelable_same_type_task(tmp_path):
         result = node._execute_task_cb(goal_handle)
 
         assert goal_handle.state == "aborted"
-        assert result.task_status == TaskStatusV1.REJECTED
+        assert result.status == TaskStatusV1.REJECTED
         assert result.error_code == ErrorCodeV1.RESOURCE_CONFLICT
         assert node._active_tasks.get("old-task") is not None
         assert node._active_tasks.get("new-task") is None
@@ -1497,12 +1497,12 @@ def test_execute_linear_mission_succeeds(tmp_path):
         goal_handle = FakeGoalHandle(request)
 
         result = node._execute_task_cb(goal_handle)
-        result_payload = json.loads(result.task_result_json)
+        result_payload = json.loads(result.result_json)
 
         assert goal_handle.state == "succeeded"
-        assert result.task_status == TaskStatusV1.DONE
+        assert result.status == TaskStatusV1.DONE
         assert result_payload["mission_id"] == "mission-1"
-        assert result_payload["task_status"] == TaskStatusV1.DONE
+        assert result_payload["status"] == TaskStatusV1.DONE
         assert [item["subtask_id"] for item in result_payload["mission_results"]] == ["wait-1", "wait-2"]
         assert sleeps == [0.0, 0.0]
         mission_events = [event for event in events_pub.messages if event.event_type.startswith("mission.")]
@@ -1543,12 +1543,12 @@ def test_execute_mission_fails_on_nonskippable_subtask_failure(tmp_path):
         goal_handle = FakeGoalHandle(request)
 
         result = node._execute_task_cb(goal_handle)
-        result_payload = json.loads(result.task_result_json)
+        result_payload = json.loads(result.result_json)
 
         assert goal_handle.state == "aborted"
-        assert result.task_status == TaskStatusV1.ERROR
+        assert result.status == TaskStatusV1.ERROR
         assert result.error_code == ErrorCodeV1.UNKNOWN_TASK
-        assert result_payload["task_status"] == TaskStatusV1.ERROR
+        assert result_payload["status"] == TaskStatusV1.ERROR
         assert result_payload["mission_results"][0]["subtask_id"] == "missing"
         mission_events = [event for event in events_pub.messages if event.event_type.startswith("mission.")]
         assert [event.event_type for event in mission_events] == [
@@ -1587,12 +1587,12 @@ def test_execute_mission_skips_allowed_subtask_failure(tmp_path):
         goal_handle = FakeGoalHandle(request)
 
         result = node._execute_task_cb(goal_handle)
-        result_payload = json.loads(result.task_result_json)
+        result_payload = json.loads(result.result_json)
 
         assert goal_handle.state == "succeeded"
-        assert result.task_status == TaskStatusV1.DONE
-        assert result_payload["task_status"] == TaskStatusV1.DONE
-        assert result_payload["mission_results"][0]["task_status"] == TaskStatusV1.SKIPPED
+        assert result.status == TaskStatusV1.DONE
+        assert result_payload["status"] == TaskStatusV1.DONE
+        assert result_payload["mission_results"][0]["status"] == TaskStatusV1.SKIPPED
         assert result_payload["mission_results"][0]["skipped"] is True
         mission_events = [event for event in events_pub.messages if event.event_type.startswith("mission.")]
         assert [event.event_type for event in mission_events] == [

@@ -32,7 +32,7 @@ Send a built-in wait task through the public action:
 ```bash
 ros2 action send_goal /task_orchestrator/execute_task \
   task_orchestrator_msgs/action/ExecuteTaskV1 \
-  "{task_name: system/wait, task_data_json: '{\"duration_sec\": 1.0}'}"
+  "{api_version: v1beta1, task_id: wait-demo, task_name: system/wait, source: cli, priority: 0, correlation_id: demo-1, task_data_json: '{\"duration_sec\": 1.0}'}"
 ```
 
 ## Inspect State

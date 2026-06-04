@@ -41,7 +41,7 @@ def test_stop_task_parser_accepts_empty_payload():
     assert request.correlation_id == ""
 
 
-def test_control_task_result_json_is_stable():
+def test_control_result_json_is_stable():
     parser = ControlTaskParser()
 
     cancel_result = parser.cancel_result_json(
