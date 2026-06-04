@@ -10,9 +10,9 @@ graph execution.
 
 Model missions as task graphs.
 
-The implemented execution path is a linear graph compatible with
-Karelics-style missions. Mission node fields include dependency and condition
-metadata so graph execution can share the same public shape.
+The implemented execution path is a linear graph compatible with legacy mission
+workflows. Mission node fields include dependency and condition metadata so
+graph execution can share the same public shape.
 
 Mission node fields:
 

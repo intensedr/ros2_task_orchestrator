@@ -2,9 +2,9 @@
 
 ## Context
 
-Karelics `task_manager` publishes active tasks and results, but it does not keep
-a durable task history. External clients such as fleet agents need to recover
-after reconnects without reconstructing state from logs.
+Common `task_manager` workflows publish active tasks and results, but they do
+not keep a durable task history. External clients such as fleet agents need to
+recover after reconnects without reconstructing state from logs.
 
 ## Decision
 

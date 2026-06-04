@@ -24,7 +24,7 @@ bridge packages.
 
 ## Goals
 
-- Provide feature parity with Karelics `task_manager`.
+- Provide feature parity with common ROS2 `task_manager` workflows.
 - Expose a stable task lifecycle for ROS2 action and service backed work.
 - Support external clients without making the core product-specific.
 - Publish current state, terminal results, feedback and lifecycle events.

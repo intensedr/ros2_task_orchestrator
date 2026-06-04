@@ -1,9 +1,9 @@
-# ADR 0002: API Compatibility With Karelics Task Manager
+# ADR 0002: Legacy API Compatibility
 
 ## Context
 
-Karelics `task_manager` already provides a useful API and behavior model. The
-new project preserves the useful concepts, but direct namespace reuse would
+Existing `task_manager` deployments provide a useful API and behavior model.
+The new project preserves the useful concepts, but direct namespace reuse would
 create confusion and make API changes harder.
 
 ## Decision
@@ -12,7 +12,7 @@ Create new package and interface names under `task_orchestrator_msgs`.
 
 Provide compatibility as an adapter, not as the primary API:
 
-- Karelics-style YAML config converter.
+- Legacy YAML config converter.
 - Optional endpoint aliases:
   - `/task_manager/execute_task`
   - `/task_manager/active_tasks`
@@ -32,7 +32,7 @@ documented in [Public API](../api/public-api.md).
 
 ## Consequences
 
-- Existing concepts are familiar to `task_manager` users.
+- Existing concepts are familiar to legacy `task_manager` users.
 - The new project can evolve event, feedback, persistence and scheduling APIs.
-- Namespace collision with an installed Karelics package is avoided.
+- Namespace collision with an installed legacy package is avoided.
 - Migration work is explicit and testable.
