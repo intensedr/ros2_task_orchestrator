@@ -37,7 +37,24 @@ forwards cancellation to cancelable active tasks and reloads task configuration
 from `tasks_config_path` without a node restart.
 
 Conflict handling covers blocking tasks, reentrant tasks, non-reentrant
-same-type replacement and configured cancel-as-success reporting.
+same-type replacement, resource locks, task groups and configured
+cancel-as-success reporting.
+
+Requests can opt into the queued lifecycle with `queue_on_conflict`,
+`scheduled_at` or `delay_sec`. Queued requests are admitted by earliest ready
+time, then priority, then FIFO order. Requests without queue intent preserve the
+existing behavior and are rejected when admission policy blocks them.
+
+`timeout_sec` and `deadline_at` provide execution timeout/deadline handling for
+compatible task backends and built-in wait tasks. Mission subtasks can carry
+`timeout_sec`, `max_attempts` and `retry_backoff_sec`; the current runtime keeps
+mission execution linear while preserving dependency/condition fields for
+future graph execution.
+
+Mission payloads can reference YAML/JSON templates through `template_path` or
+`template_id`. Templates are resolved before the normal mission parser, so
+templated missions use the same validation, execution, progress and result
+contracts as explicit mission JSON.
 
 Observability is ROS2-native and dependency-free by default: task events include
 structured `data_json`, all tasks publish start and terminal feedback, and task
@@ -65,4 +82,5 @@ that bounded in-memory set without requiring storage.
 SQLite durability is available as an optional backend through
 `storage.enabled` and `storage.sqlite_path`. When enabled, task records and
 events are written to SQLite using Python standard-library `sqlite3`; the same
-query services read from SQLite for recovery across node restarts.
+query services read from SQLite for recovery across node restarts. Stored
+records include duration, idempotency, fleet-safe metadata and tracing fields.

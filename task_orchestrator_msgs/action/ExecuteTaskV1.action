@@ -13,6 +13,20 @@ string error_message
 string result_json
 string task_data_json
 string[] tags
+builtin_interfaces/Time scheduled_at
+float64 delay_sec
+builtin_interfaces/Time deadline_at
+float64 timeout_sec
+bool queue_on_conflict
+string idempotency_key
+string metadata_json
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 ---
 string api_version
 string task_id
@@ -27,6 +41,17 @@ string status
 string error_code
 string error_message
 string result_json
+float64 duration_sec
+float64 total_duration_sec
+string idempotency_key
+string metadata_json
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 ---
 string api_version
 string task_id
@@ -43,4 +68,15 @@ string error_message
 string result_json
 float32 progress
 string feedback_json
+float64 duration_sec
+float64 total_duration_sec
+string idempotency_key
+string metadata_json
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 builtin_interfaces/Time stamp

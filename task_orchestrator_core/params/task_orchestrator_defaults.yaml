@@ -6,6 +6,10 @@ task_orchestrator:
     event_record_limit: 1000
     task_record_limit: 1000
     tasks_config_path: ""
+    mission_templates_path: ""
+    queue:
+      max_size: 100
+      poll_interval_sec: 0.05
     tasks: []
     storage:
       enabled: false

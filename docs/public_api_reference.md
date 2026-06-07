@@ -27,6 +27,29 @@ messages such as `TaskStatusV1` and `ErrorCodeV1` are intentionally excluded:
 - `error_code`: stable machine-readable error code.
 - `error_message`: human-readable diagnostic text.
 - `result_json`: JSON result payload.
+- `duration_sec`: runtime duration from `started_at` to `finished_at`.
+- `total_duration_sec`: total duration from `created_at` to `finished_at`.
+
+Fleet-safe context fields are optional and default to empty strings:
+
+- `robot_id`
+- `fleet_id`
+- `site_id`
+- `zone_id`
+- `operator_id`
+- `tenant_id`
+- `trace_id`
+- `idempotency_key`
+- `metadata_json`
+
+Execute requests can also carry scheduling fields:
+
+- `scheduled_at`: earliest start time.
+- `delay_sec`: relative delay before a queued task can start.
+- `deadline_at`: latest acceptable completion time.
+- `timeout_sec`: execution timeout hint for compatible task backends.
+- `queue_on_conflict`: queue instead of rejecting while admission policy is
+  blocked.
 
 ## Status Values
 
@@ -58,6 +81,7 @@ Stable error codes:
 - `TASK_TIMEOUT`
 - `POLICY_REJECTED`
 - `RESOURCE_CONFLICT`
+- `DEADLINE_EXCEEDED`
 - `SERVER_UNAVAILABLE`
 - `UNSUPPORTED`
 - `INTERNAL_ERROR`
@@ -82,6 +106,20 @@ string error_message
 string result_json
 string task_data_json
 string[] tags
+builtin_interfaces/Time scheduled_at
+float64 delay_sec
+builtin_interfaces/Time deadline_at
+float64 timeout_sec
+bool queue_on_conflict
+string idempotency_key
+string metadata_json
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 ---
 string api_version
 string task_id
@@ -96,6 +134,17 @@ string status
 string error_code
 string error_message
 string result_json
+float64 duration_sec
+float64 total_duration_sec
+string idempotency_key
+string metadata_json
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 ---
 string api_version
 string task_id
@@ -112,6 +161,17 @@ string error_message
 string result_json
 float32 progress
 string feedback_json
+float64 duration_sec
+float64 total_duration_sec
+string idempotency_key
+string metadata_json
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 builtin_interfaces/Time stamp
 ```
 
@@ -120,6 +180,10 @@ Semantics:
 - Empty `task_id` is allowed and generates a UUID.
 - Unknown `task_name` returns `REJECTED` with `UNKNOWN_TASK`.
 - Invalid JSON returns `ERROR` with `TASK_DATA_PARSING_FAILED`.
+- `queue_on_conflict`, `scheduled_at` and `delay_sec` move the request through
+  `QUEUED` before `IN_PROGRESS`.
+- `timeout_sec` and `deadline_at` map to `TASK_TIMEOUT` or
+  `DEADLINE_EXCEEDED` when exceeded.
 - Cancellation through the action server maps to task cancellation when the
   backing task supports cancellation.
 
@@ -142,6 +206,15 @@ string error_code
 string error_message
 string result_json
 string[] tags
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
+string metadata_json
+string idempotency_key
 ```
 
 `msg/ActiveTaskArrayV1.msg`
@@ -160,6 +233,13 @@ string status
 string error_code
 string error_message
 string result_json
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 ActiveTaskV1[] active_tasks
 builtin_interfaces/Time stamp
 ```
@@ -193,6 +273,17 @@ string status
 string error_code
 string error_message
 string result_json
+float64 duration_sec
+float64 total_duration_sec
+string idempotency_key
+string metadata_json
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 ```
 
 Topic:
@@ -229,6 +320,16 @@ string error_message
 string result_json
 string previous_status
 string data_json
+float64 duration_sec
+float64 total_duration_sec
+string idempotency_key
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 builtin_interfaces/Time stamp
 ```
 
@@ -258,6 +359,16 @@ string error_message
 string result_json
 float32 progress
 string feedback_json
+float64 duration_sec
+float64 total_duration_sec
+string idempotency_key
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 builtin_interfaces/Time stamp
 ```
 
@@ -380,6 +491,10 @@ task_orchestrator:
     enable_debug_task_servers: false
     event_record_limit: 1000
     task_record_limit: 1000
+    mission_templates_path: ""
+    queue:
+      max_size: 100
+      poll_interval_sec: 0.05
     storage:
       enabled: false
       sqlite_path: ""
@@ -397,6 +512,9 @@ task_orchestrator:
       priority_default: 0
       cancel_timeout: 5.0
       resources: ["base", "map"]
+      task_group: "navigation"
+      capability_tags: ["localization", "motion"]
+      queue_on_conflict_default: false
       tags: ["navigation"]
 ```
 

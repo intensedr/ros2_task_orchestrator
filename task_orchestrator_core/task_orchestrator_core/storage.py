@@ -38,6 +38,7 @@ class SQLiteTaskStorage:
         self._connection.close()
 
     def write_task_record(self, record: TaskRecordV1) -> None:
+        _sync_task_record_metadata(record)
         result = record.result
         created_sec, created_nanosec = _time_to_pair(result.created_at)
         started_sec, started_nanosec = _time_to_pair(result.started_at)
@@ -47,11 +48,13 @@ class SQLiteTaskStorage:
             INSERT INTO task_records (
                 task_id, api_version, task_name, source, priority, correlation_id,
                 status, error_code, error_message, result_json,
-                task_data_json, tags_json, active, created_sec, created_nanosec,
+                duration_sec, total_duration_sec, idempotency_key, metadata_json,
+                robot_id, fleet_id, site_id, zone_id, operator_id, tenant_id,
+                trace_id, task_data_json, tags_json, active, created_sec, created_nanosec,
                 started_sec, started_nanosec, finished_sec, finished_nanosec,
                 updated_at_ns
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 api_version = excluded.api_version,
                 task_name = excluded.task_name,
@@ -62,6 +65,17 @@ class SQLiteTaskStorage:
                 error_code = excluded.error_code,
                 error_message = excluded.error_message,
                 result_json = excluded.result_json,
+                duration_sec = excluded.duration_sec,
+                total_duration_sec = excluded.total_duration_sec,
+                idempotency_key = excluded.idempotency_key,
+                metadata_json = excluded.metadata_json,
+                robot_id = excluded.robot_id,
+                fleet_id = excluded.fleet_id,
+                site_id = excluded.site_id,
+                zone_id = excluded.zone_id,
+                operator_id = excluded.operator_id,
+                tenant_id = excluded.tenant_id,
+                trace_id = excluded.trace_id,
                 task_data_json = excluded.task_data_json,
                 tags_json = excluded.tags_json,
                 active = excluded.active,
@@ -84,6 +98,17 @@ class SQLiteTaskStorage:
                 result.error_code,
                 result.error_message,
                 result.result_json,
+                result.duration_sec,
+                result.total_duration_sec,
+                record.idempotency_key,
+                record.metadata_json,
+                record.robot_id,
+                record.fleet_id,
+                record.site_id,
+                record.zone_id,
+                record.operator_id,
+                record.tenant_id,
+                record.trace_id,
                 record.task_data_json,
                 json.dumps(list(record.tags), sort_keys=True),
                 1 if record.active else 0,
@@ -131,10 +156,12 @@ class SQLiteTaskStorage:
                 priority, correlation_id, created_sec, created_nanosec,
                 started_sec, started_nanosec, finished_sec, finished_nanosec,
                 previous_status, status, error_code, error_message, result_json,
+                duration_sec, total_duration_sec, idempotency_key, robot_id,
+                fleet_id, site_id, zone_id, operator_id, tenant_id, trace_id,
                 data_json, stamp_sec, stamp_nanosec,
                 stored_at_ns
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_id) DO UPDATE SET
                 api_version = excluded.api_version,
                 event_type = excluded.event_type,
@@ -154,6 +181,16 @@ class SQLiteTaskStorage:
                 error_code = excluded.error_code,
                 error_message = excluded.error_message,
                 result_json = excluded.result_json,
+                duration_sec = excluded.duration_sec,
+                total_duration_sec = excluded.total_duration_sec,
+                idempotency_key = excluded.idempotency_key,
+                robot_id = excluded.robot_id,
+                fleet_id = excluded.fleet_id,
+                site_id = excluded.site_id,
+                zone_id = excluded.zone_id,
+                operator_id = excluded.operator_id,
+                tenant_id = excluded.tenant_id,
+                trace_id = excluded.trace_id,
                 data_json = excluded.data_json,
                 stamp_sec = excluded.stamp_sec,
                 stamp_nanosec = excluded.stamp_nanosec,
@@ -179,6 +216,16 @@ class SQLiteTaskStorage:
                 event.error_code,
                 event.error_message,
                 event.result_json,
+                event.duration_sec,
+                event.total_duration_sec,
+                event.idempotency_key,
+                event.robot_id,
+                event.fleet_id,
+                event.site_id,
+                event.zone_id,
+                event.operator_id,
+                event.tenant_id,
+                event.trace_id,
                 event.data_json,
                 stamp_sec,
                 stamp_nanosec,
@@ -214,6 +261,17 @@ class SQLiteTaskStorage:
                 error_code TEXT NOT NULL,
                 error_message TEXT NOT NULL,
                 result_json TEXT NOT NULL,
+                duration_sec REAL NOT NULL,
+                total_duration_sec REAL NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                robot_id TEXT NOT NULL,
+                fleet_id TEXT NOT NULL,
+                site_id TEXT NOT NULL,
+                zone_id TEXT NOT NULL,
+                operator_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                trace_id TEXT NOT NULL,
                 task_data_json TEXT NOT NULL,
                 tags_json TEXT NOT NULL,
                 active INTEGER NOT NULL,
@@ -250,6 +308,16 @@ class SQLiteTaskStorage:
                 error_code TEXT NOT NULL,
                 error_message TEXT NOT NULL,
                 result_json TEXT NOT NULL,
+                duration_sec REAL NOT NULL,
+                total_duration_sec REAL NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                robot_id TEXT NOT NULL,
+                fleet_id TEXT NOT NULL,
+                site_id TEXT NOT NULL,
+                zone_id TEXT NOT NULL,
+                operator_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                trace_id TEXT NOT NULL,
                 data_json TEXT NOT NULL,
                 stamp_sec INTEGER NOT NULL,
                 stamp_nanosec INTEGER NOT NULL,
@@ -264,6 +332,21 @@ class SQLiteTaskStorage:
         self._ensure_column("task_records", "priority", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("task_records", "status", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("task_records", "result_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column("task_records", "duration_sec", "REAL NOT NULL DEFAULT 0.0")
+        self._ensure_column("task_records", "total_duration_sec", "REAL NOT NULL DEFAULT 0.0")
+        for column_name in (
+            "idempotency_key",
+            "metadata_json",
+            "robot_id",
+            "fleet_id",
+            "site_id",
+            "zone_id",
+            "operator_id",
+            "tenant_id",
+            "trace_id",
+        ):
+            default = "'{}'" if column_name == "metadata_json" else "''"
+            self._ensure_column("task_records", column_name, f"TEXT NOT NULL DEFAULT {default}")
         record_columns = self._table_columns("task_records")
         if "task_status" in record_columns:
             self._connection.execute("UPDATE task_records SET status = task_status WHERE status = ''")
@@ -284,6 +367,19 @@ class SQLiteTaskStorage:
             self._ensure_column("task_events", column_name, "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("task_events", "status", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("task_events", "result_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column("task_events", "duration_sec", "REAL NOT NULL DEFAULT 0.0")
+        self._ensure_column("task_events", "total_duration_sec", "REAL NOT NULL DEFAULT 0.0")
+        for column_name in (
+            "idempotency_key",
+            "robot_id",
+            "fleet_id",
+            "site_id",
+            "zone_id",
+            "operator_id",
+            "tenant_id",
+            "trace_id",
+        ):
+            self._ensure_column("task_events", column_name, "TEXT NOT NULL DEFAULT ''")
         event_columns = self._table_columns("task_events")
         if "current_status" in event_columns:
             self._connection.execute("UPDATE task_events SET status = current_status WHERE status = ''")
@@ -358,6 +454,17 @@ class SQLiteTaskStorage:
         result.error_code = row["error_code"]
         result.error_message = row["error_message"]
         result.result_json = row["result_json"]
+        result.duration_sec = row["duration_sec"]
+        result.total_duration_sec = row["total_duration_sec"]
+        result.idempotency_key = row["idempotency_key"]
+        result.metadata_json = row["metadata_json"]
+        result.robot_id = row["robot_id"]
+        result.fleet_id = row["fleet_id"]
+        result.site_id = row["site_id"]
+        result.zone_id = row["zone_id"]
+        result.operator_id = row["operator_id"]
+        result.tenant_id = row["tenant_id"]
+        result.trace_id = row["trace_id"]
         result.created_at = _pair_to_time(row["created_sec"], row["created_nanosec"])
         result.started_at = _pair_to_time(row["started_sec"], row["started_nanosec"])
         result.finished_at = _pair_to_time(row["finished_sec"], row["finished_nanosec"])
@@ -367,6 +474,15 @@ class SQLiteTaskStorage:
         record.active = bool(row["active"])
         record.task_data_json = row["task_data_json"]
         record.tags = list(json.loads(row["tags_json"]))
+        record.idempotency_key = row["idempotency_key"]
+        record.metadata_json = row["metadata_json"]
+        record.robot_id = row["robot_id"]
+        record.fleet_id = row["fleet_id"]
+        record.site_id = row["site_id"]
+        record.zone_id = row["zone_id"]
+        record.operator_id = row["operator_id"]
+        record.tenant_id = row["tenant_id"]
+        record.trace_id = row["trace_id"]
         _sync_task_record_metadata(record)
         return record
 
@@ -388,6 +504,16 @@ class SQLiteTaskStorage:
         event.error_code = row["error_code"]
         event.error_message = row["error_message"]
         event.result_json = row["result_json"]
+        event.duration_sec = row["duration_sec"]
+        event.total_duration_sec = row["total_duration_sec"]
+        event.idempotency_key = row["idempotency_key"]
+        event.robot_id = row["robot_id"]
+        event.fleet_id = row["fleet_id"]
+        event.site_id = row["site_id"]
+        event.zone_id = row["zone_id"]
+        event.operator_id = row["operator_id"]
+        event.tenant_id = row["tenant_id"]
+        event.trace_id = row["trace_id"]
         event.data_json = row["data_json"]
         event.stamp = _pair_to_time(row["stamp_sec"], row["stamp_nanosec"])
         return event
@@ -412,6 +538,17 @@ def _sync_task_record_metadata(record: TaskRecordV1) -> None:
     record.error_code = result.error_code
     record.error_message = result.error_message
     record.result_json = result.result_json
+    record.duration_sec = result.duration_sec
+    record.total_duration_sec = result.total_duration_sec
+    record.idempotency_key = result.idempotency_key
+    record.metadata_json = result.metadata_json
+    record.robot_id = result.robot_id
+    record.fleet_id = result.fleet_id
+    record.site_id = result.site_id
+    record.zone_id = result.zone_id
+    record.operator_id = result.operator_id
+    record.tenant_id = result.tenant_id
+    record.trace_id = result.trace_id
 
 
 def _time_to_pair(value: Time) -> tuple[int, int]:

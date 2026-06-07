@@ -29,6 +29,9 @@ tasks:
     blocking: true
     cancel_reported_as_success: true
     reentrant: false
+    task_group: navigation
+    capability_tags: [localization, motion]
+    queue_on_conflict_default: true
     tags: [nav2, motion]
 """,
         encoding="utf-8",
@@ -42,6 +45,9 @@ tasks:
     assert task.blocking is True
     assert task.cancel_reported_as_success is True
     assert task.reentrant is False
+    assert task.task_group == "navigation"
+    assert task.capability_tags == ("localization", "motion")
+    assert task.queue_on_conflict_default is True
     assert task.tags == ("nav2", "motion")
 
 

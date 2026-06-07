@@ -21,6 +21,7 @@ class MissionSubtask:
     task_data_json: str
     allow_skipping: bool = False
     max_attempts: int = 1
+    retry_backoff_sec: float = 0.0
     timeout_sec: float = 0.0
     depends_on: tuple[str, ...] = field(default_factory=tuple)
     condition_json: str = ""
@@ -128,6 +129,14 @@ class MissionTaskParser:
         if max_attempts < 1:
             raise MissionTaskValidationError(f"subtasks[{index - 1}].max_attempts must be at least 1")
 
+        retry_backoff_sec = float(item.get("retry_backoff_sec", 0.0))
+        if retry_backoff_sec < 0:
+            raise MissionTaskValidationError(f"subtasks[{index - 1}].retry_backoff_sec must be non-negative")
+
+        timeout_sec = float(item.get("timeout_sec", 0.0))
+        if timeout_sec < 0:
+            raise MissionTaskValidationError(f"subtasks[{index - 1}].timeout_sec must be non-negative")
+
         depends_on = item.get("depends_on", [])
         if not isinstance(depends_on, list) or not all(isinstance(value, str) for value in depends_on):
             raise MissionTaskValidationError(f"subtasks[{index - 1}].depends_on must be a list of strings")
@@ -145,7 +154,8 @@ class MissionTaskParser:
             task_data_json=task_data_json,
             allow_skipping=bool(item.get("allow_skipping", False)),
             max_attempts=max_attempts,
-            timeout_sec=float(item.get("timeout_sec", 0.0)),
+            retry_backoff_sec=retry_backoff_sec,
+            timeout_sec=timeout_sec,
             depends_on=tuple(depends_on),
             condition_json=condition_json,
         )

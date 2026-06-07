@@ -665,6 +665,88 @@ def test_execute_system_wait_succeeds_and_clears_active_task(tmp_path):
         _destroy_node(node)
 
 
+def test_execute_wait_respects_request_timeout(tmp_path):
+    node = _make_node(tmp_path)
+    sleeps = []
+    node._wait_task = WaitTaskExecutor(sleep=sleeps.append)
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "timeout-wait"
+        request.task_name = "system/wait"
+        request.task_data_json = '{"duration_sec": 2.0}'
+        request.timeout_sec = 1.0
+
+        result = node._execute_task_cb(FakeGoalHandle(request))
+
+        assert result.status == TaskStatusV1.ERROR
+        assert result.error_code == ErrorCodeV1.TASK_TIMEOUT
+        assert result.duration_sec >= 0.0
+        assert sleeps == []
+    finally:
+        _destroy_node(node)
+
+
+def test_execute_task_copies_fleet_metadata_to_result_record_and_event(tmp_path):
+    node = _make_node(tmp_path)
+    events_pub = RecordingPublisher()
+    node._events_pub = events_pub
+    node._wait_task = WaitTaskExecutor(sleep=lambda _: None)
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "metadata-task"
+        request.task_name = "system/wait"
+        request.task_data_json = '{"duration_sec": 0}'
+        request.metadata_json = '{"work_order": "wo-1"}'
+        request.robot_id = "robot-1"
+        request.fleet_id = "fleet-1"
+        request.site_id = "site-1"
+        request.zone_id = "zone-1"
+        request.operator_id = "operator-1"
+        request.trace_id = "trace-1"
+
+        result = node._execute_task_cb(FakeGoalHandle(request))
+
+        assert result.status == TaskStatusV1.DONE
+        assert result.robot_id == "robot-1"
+        assert result.trace_id == "trace-1"
+        assert result.metadata_json == '{"work_order": "wo-1"}'
+        assert node._task_records["metadata-task"].robot_id == "robot-1"
+        assert events_pub.messages[-1].robot_id == "robot-1"
+        assert events_pub.messages[-1].trace_id == "trace-1"
+    finally:
+        _destroy_node(node)
+
+
+def test_queue_on_conflict_request_publishes_queued_and_dequeued_events(tmp_path):
+    node = _make_node(tmp_path)
+    events_pub = RecordingPublisher()
+    node._events_pub = events_pub
+    node._wait_task = WaitTaskExecutor(sleep=lambda _: None)
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "queued-task"
+        request.task_name = "system/wait"
+        request.task_data_json = '{"duration_sec": 0}'
+        request.queue_on_conflict = True
+        request.priority = 5
+
+        result = node._execute_task_cb(FakeGoalHandle(request))
+
+        assert result.status == TaskStatusV1.DONE
+        assert [event.event_type for event in events_pub.messages] == [
+            "task.received",
+            "task.queued",
+            "task.dequeued",
+            "task.started",
+            "task.completed",
+        ]
+        queued_data = json.loads(events_pub.messages[1].data_json)
+        assert queued_data["queue_position"] == 1
+        assert events_pub.messages[3].previous_status == TaskStatusV1.QUEUED
+    finally:
+        _destroy_node(node)
+
+
 def test_done_terminal_result_and_event_are_published_once(tmp_path):
     node = _make_node(tmp_path)
     events_pub = RecordingPublisher()
@@ -1333,6 +1415,46 @@ def test_blocking_active_task_rejects_new_task(tmp_path):
         _destroy_node(node)
 
 
+def test_resource_lock_rejects_conflicting_task(tmp_path):
+    node = _make_node(tmp_path)
+    node._task_registry.add(
+        TaskDefinition(
+            task_name="example/use-base",
+            task_server_type="system/wait",
+            resources=("base",),
+        )
+    )
+    try:
+        node._active_tasks.add(
+            ActiveTaskEntry(
+                api_version="v1beta1",
+                task_id="active-base-task",
+                task_name="example/active-base",
+                source="test",
+                correlation_id="corr-1",
+                priority=0,
+                status=TaskStatusV1.IN_PROGRESS,
+                created_at=node.get_clock().now().to_msg(),
+                started_at=node.get_clock().now().to_msg(),
+                tags=(),
+                task_server_type="action",
+                resources=("base",),
+            )
+        )
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "resource-conflict"
+        request.task_name = "example/use-base"
+        request.task_data_json = '{"duration_sec": 0}'
+
+        result = node._execute_task_cb(FakeGoalHandle(request))
+
+        assert result.status == TaskStatusV1.REJECTED
+        assert result.error_code == ErrorCodeV1.RESOURCE_CONFLICT
+        assert "resources: base" in result.error_message
+    finally:
+        _destroy_node(node)
+
+
 def test_reentrant_task_allows_same_task_name(tmp_path):
     node = _make_node(tmp_path)
     sleeps = []
@@ -1516,6 +1638,53 @@ def test_execute_linear_mission_succeeds(tmp_path):
         ]
         assert json.loads(mission_events[0].data_json)["mission_id"] == "mission-1"
         assert json.loads(mission_events[-1].data_json)["completed_subtasks"] == 2
+    finally:
+        _destroy_node(node)
+
+
+def test_execute_mission_from_yaml_template(tmp_path):
+    templates_dir = tmp_path / "mission_templates"
+    templates_dir.mkdir()
+    template_path = templates_dir / "wait.yaml"
+    template_path.write_text(
+        """
+parameters:
+  mission_id: template-mission
+  duration_sec: 0
+mission_id: "${mission_id}"
+subtasks:
+  - subtask_id: wait-1
+    task_name: system/wait
+    task_data_json:
+      duration_sec: "${duration_sec}"
+""",
+        encoding="utf-8",
+    )
+    node = _make_node(tmp_path)
+    node.set_parameters([Parameter("mission_templates_path", value=str(templates_dir))])
+    sleeps = []
+    node._wait_task = WaitTaskExecutor(sleep=sleeps.append)
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "mission-template-task"
+        request.task_name = "system/mission"
+        request.task_data_json = json.dumps(
+            {
+                "template_id": "wait",
+                "params": {
+                    "mission_id": "mission-from-template",
+                    "duration_sec": 0,
+                },
+            }
+        )
+
+        result = node._execute_task_cb(FakeGoalHandle(request))
+        result_payload = json.loads(result.result_json)
+
+        assert result.status == TaskStatusV1.DONE
+        assert result_payload["mission_id"] == "mission-from-template"
+        assert [item["subtask_id"] for item in result_payload["mission_results"]] == ["wait-1"]
+        assert sleeps == [0.0]
     finally:
         _destroy_node(node)
 

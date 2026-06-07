@@ -21,6 +21,7 @@ Mission node fields:
 - `task_data_json`
 - `allow_skipping`
 - `retry_policy`
+- `retry_backoff_sec`
 - `timeout_sec`
 - `depends_on`
 - `condition`
@@ -40,6 +41,10 @@ Mission execution rules:
 - Cancelling a mission cascades cancellation to the active subtask.
 - A failed non-skippable subtask fails the mission.
 - A failed skippable subtask records `SKIPPED` and continues.
+- `max_attempts`, `retry_backoff_sec` and `timeout_sec` are honored by the
+  linear executor.
+- YAML/JSON mission templates are resolved into the same mission payload shape
+  before validation and execution.
 
 ## Consequences
 

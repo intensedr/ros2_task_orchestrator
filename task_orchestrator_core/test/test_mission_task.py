@@ -17,6 +17,9 @@ def test_mission_task_parser_accepts_linear_subtasks():
                         "task_name": "system/wait",
                         "task_data_json": {"duration_sec": 0},
                         "allow_skipping": True,
+                        "max_attempts": 2,
+                        "retry_backoff_sec": 0.5,
+                        "timeout_sec": 3.0,
                     }
                 ],
             }
@@ -29,6 +32,9 @@ def test_mission_task_parser_accepts_linear_subtasks():
     assert mission.subtasks[0].task_id == "mission-1/wait-1"
     assert mission.subtasks[0].task_data_json == '{"duration_sec": 0}'
     assert mission.subtasks[0].allow_skipping is True
+    assert mission.subtasks[0].max_attempts == 2
+    assert mission.subtasks[0].retry_backoff_sec == 0.5
+    assert mission.subtasks[0].timeout_sec == 3.0
 
 
 def test_mission_task_parser_rejects_missing_task_name():

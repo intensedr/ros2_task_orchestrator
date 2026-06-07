@@ -28,6 +28,7 @@ Rules:
 - `REJECTED` means pre-start validation or policy denied the request.
 - `QUEUED` means the request is accepted but waiting for scheduling or
   resources.
+- Queued requests are ordered by ready time, priority and FIFO sequence.
 - `IN_PROGRESS` means the backing ROS2 action or service was started.
 - `DONE`, `ERROR`, `CANCELED`, `SKIPPED` are terminal states.
 - Every terminal state publishes exactly one result and one terminal event.

@@ -1,12 +1,16 @@
 """ROS2 node for ROS2 Task Orchestrator."""
 
 import json
+import threading
+import time as wall_time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 import rclpy
+import yaml
 from rclpy.action import ActionServer, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -90,6 +94,26 @@ from task_orchestrator_msgs.srv import (
 
 
 _CONTROL_TASK_SERVER_TYPES = {"system/cancel_task", "system/stop"}
+_PUBLIC_CONTEXT_FIELDS = (
+    "idempotency_key",
+    "metadata_json",
+    "robot_id",
+    "fleet_id",
+    "site_id",
+    "zone_id",
+    "operator_id",
+    "tenant_id",
+    "trace_id",
+)
+
+
+@dataclass(frozen=True)
+class _QueuedTaskEntry:
+    task_id: str
+    task_name: str
+    priority: int
+    enqueued_index: int
+    ready_at_ns: int
 
 
 class _ChildGoalHandle:
@@ -124,22 +148,32 @@ class TaskOrchestratorNode(Node):
         self.declare_parameter("event_record_limit", 1000)
         self.declare_parameter("task_record_limit", 1000)
         self.declare_parameter("tasks_config_path", "")
+        self.declare_parameter("mission_templates_path", "")
+        self.declare_parameter("queue.max_size", 100)
+        self.declare_parameter("queue.poll_interval_sec", 0.05)
         self.declare_parameter("storage.enabled", False)
         self.declare_parameter("storage.sqlite_path", "")
         self.declare_parameter("storage.retention_days", 30)
         self.api_version = self.get_parameter("api_version").value
         self._event_record_limit = max(0, int(self.get_parameter("event_record_limit").value))
         self._task_record_limit = max(0, int(self.get_parameter("task_record_limit").value))
+        self._queue_max_size = max(0, int(self.get_parameter("queue.max_size").value))
+        self._queue_poll_interval_sec = max(0.001, float(self.get_parameter("queue.poll_interval_sec").value))
         self._callback_group = ReentrantCallbackGroup()
         self._task_registry = self._load_task_registry()
         self._active_tasks = ActiveTaskRegistry()
         self._active_mission_subtasks: dict[str, str] = {}
+        self._queued_tasks: OrderedDict[str, _QueuedTaskEntry] = OrderedDict()
+        self._queue_condition = threading.Condition()
+        self._queue_sequence = 0
+        self._idempotency_task_ids: dict[str, str] = {}
         self._event_records: OrderedDict[str, TaskEventV1] = OrderedDict()
         self._task_records: OrderedDict[str, TaskRecordV1] = OrderedDict()
         self._storage = self._make_storage()
         self._control_task = ControlTaskParser()
         self._mission_task = MissionTaskParser()
         self._wait_task = WaitTaskExecutor()
+        self._retry_sleep = wall_time.sleep
         self._action_task_client = ActionTaskClient(self, callback_group=self._callback_group)
         self._service_task_client = ServiceTaskClient(self, callback_group=self._callback_group)
 
@@ -270,6 +304,32 @@ class TaskOrchestratorNode(Node):
         task_id = request.task_id or str(uuid.uuid4())
         request.task_id = task_id
         task = self._task_registry.get(request.task_name)
+        if task is not None and request.priority == 0:
+            request.priority = task.priority_default
+
+        metadata_error = self._normalize_request_metadata(request)
+        if metadata_error:
+            result = self._make_result(
+                request=request,
+                task_id=task_id,
+                status=TaskStatusV1.REJECTED,
+                error_code=ErrorCodeV1.TASK_DATA_PARSING_FAILED,
+                error_message=metadata_error,
+                created_at=created_at,
+                started_at=created_at,
+                finished_at=created_at,
+            )
+            goal_handle.abort()
+            self._publish_terminal_result_and_event(result, "task.rejected")
+            return result
+
+        idempotent_result = self._claim_or_get_idempotent_result(request)
+        if idempotent_result is not None:
+            if idempotent_result.status == TaskStatusV1.DONE:
+                goal_handle.succeed()
+            else:
+                goal_handle.abort()
+            return idempotent_result
 
         self._publish_event(
             event_type="task.received",
@@ -284,7 +344,10 @@ class TaskOrchestratorNode(Node):
                 "task_id_generated": task_id_generated,
                 "priority": request.priority,
                 "tags": list(request.tags),
+                **self._request_scheduling_observability_data(request),
+                **self._request_context_observability_data(request),
             },
+            context=request,
         )
         self._store_received_task_record(request, task_id, created_at)
 
@@ -318,6 +381,17 @@ class TaskOrchestratorNode(Node):
             self._publish_terminal_result_and_event(result, "task.rejected")
             return result
 
+        queue_result = self._queue_until_admitted(
+            task=task,
+            request=request,
+            goal_handle=goal_handle,
+            ignored_active_task_ids=ignored_active_task_ids,
+        )
+        if queue_result is not None:
+            goal_handle.abort()
+            self._publish_terminal_result_and_event(queue_result, self._terminal_event_type(queue_result.status))
+            return queue_result
+
         policy_error = self._apply_start_policy(task, ignored_active_task_ids=ignored_active_task_ids)
         if policy_error:
             result = self._make_result(
@@ -335,7 +409,7 @@ class TaskOrchestratorNode(Node):
             return result
 
         try:
-            prepared_task = self._prepare_task(task, request.task_data_json, task_id)
+            prepared_task = self._prepare_task(task, request, task_id)
         except (
             ActionTaskDataError,
             ControlTaskValidationError,
@@ -385,6 +459,7 @@ class TaskOrchestratorNode(Node):
             self._publish_terminal_result_and_event(result, "task.rejected")
             return result
 
+        started_previous_status = self._current_record_status(task_id) or TaskStatusV1.RECEIVED
         started_at = self.get_clock().now().to_msg()
         try:
             active_task = ActiveTaskEntry(
@@ -401,7 +476,20 @@ class TaskOrchestratorNode(Node):
                 task_server_type=task.task_server_type,
                 blocking=task.blocking,
                 cancel_on_stop=task.cancel_on_stop,
-                cancel_callback=self._make_cancel_callback(task, task_id),
+                resources=task.resources,
+                task_group=task.task_group,
+                capability_tags=task.capability_tags,
+                robot_id=request.robot_id,
+                fleet_id=request.fleet_id,
+                site_id=request.site_id,
+                zone_id=request.zone_id,
+                operator_id=request.operator_id,
+                tenant_id=request.tenant_id,
+                trace_id=request.trace_id,
+                metadata_json=request.metadata_json,
+                idempotency_key=request.idempotency_key,
+                timeout_sec=self._effective_timeout_sec(request),
+                cancel_callback=self._make_cancel_callback(self._task_with_request_timeout(task, request), task_id),
             )
             self._active_tasks.add(active_task)
             self._store_active_task_record(active_task, request.task_data_json)
@@ -426,12 +514,13 @@ class TaskOrchestratorNode(Node):
             task_name=request.task_name,
             source=request.source,
             correlation_id=request.correlation_id,
-            previous_status=TaskStatusV1.RECEIVED,
+            previous_status=started_previous_status,
             status=TaskStatusV1.IN_PROGRESS,
             priority=request.priority,
             created_at=created_at,
             started_at=started_at,
             data=self._task_definition_observability_data(task, request),
+            context=request,
         )
         self._publish_task_feedback(
             task_id=task_id,
@@ -447,12 +536,14 @@ class TaskOrchestratorNode(Node):
             created_at=created_at,
             started_at=started_at,
             status=TaskStatusV1.IN_PROGRESS,
+            context=request,
         )
         self._publish_active_tasks()
 
         try:
             outcome = self._execute_prepared_task(task, prepared_task, task_id, request)
             finished_at = self.get_clock().now().to_msg()
+            outcome = self._apply_terminal_deadline(request, outcome, finished_at)
             result = self._make_result(
                 request=request,
                 task_id=task_id,
@@ -544,24 +635,146 @@ class TaskOrchestratorNode(Node):
             return result
         finally:
             self._active_tasks.remove(task_id)
+            self._notify_queue()
             self._publish_active_tasks()
             if "result" in locals():
                 self._publish_terminal_result_and_event(result, self._terminal_event_type(result.status))
 
-    def _prepare_task(self, task: TaskDefinition, task_data_json: str, task_id: str) -> Any:
+    def _prepare_task(self, task: TaskDefinition, request: ExecuteTaskV1.Goal, task_id: str) -> Any:
+        task_data_json = request.task_data_json
         if task.task_server_type == "system/cancel_task":
             return self._control_task.parse_cancel(task_data_json)
         if task.task_server_type == "system/mission":
-            return self._mission_task.parse(task_data_json, default_mission_id=task_id)
+            return self._mission_task.parse(
+                self._resolve_mission_task_data_json(task_data_json),
+                default_mission_id=task_id,
+            )
         if task.task_server_type == "system/stop":
             return self._control_task.parse_stop(task_data_json)
         if task.task_server_type == "system/wait":
             return self._wait_task.parse(task_data_json)
+        effective_task = self._task_with_request_timeout(task, request)
         if task.task_server_type == "action":
-            return self._action_task_client.prepare(task, task_data_json)
+            return self._action_task_client.prepare(effective_task, task_data_json)
         if task.task_server_type == "service":
-            return self._service_task_client.prepare(task, task_data_json)
+            return self._service_task_client.prepare(effective_task, task_data_json)
         raise NotImplementedError
+
+    def _resolve_mission_task_data_json(self, task_data_json: str) -> str:
+        payload_text = task_data_json or "{}"
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            return task_data_json
+        if not isinstance(payload, dict):
+            return task_data_json
+        if "template_path" not in payload and "template_id" not in payload:
+            return task_data_json
+
+        template_payload = self._load_mission_template_payload(payload)
+        params = self._mission_template_parameters(template_payload, payload)
+        rendered_payload = self._render_mission_template_value(
+            {
+                key: value
+                for key, value in template_payload.items()
+                if key not in {"parameters"}
+            },
+            params,
+        )
+        request_overlay = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"template_path", "template_id", "params"}
+        }
+        merged_payload = self._deep_merge_dicts(rendered_payload, request_overlay)
+        return json.dumps(merged_payload, sort_keys=True)
+
+    def _load_mission_template_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        template_path = self._mission_template_path(payload)
+        try:
+            with template_path.open("r", encoding="utf-8") as stream:
+                template_payload = yaml.safe_load(stream) or {}
+        except OSError as exc:
+            raise MissionTaskValidationError(f"cannot read mission template {template_path}: {exc}") from exc
+        except yaml.YAMLError as exc:
+            raise MissionTaskValidationError(f"cannot parse mission template {template_path}: {exc}") from exc
+
+        if not isinstance(template_payload, dict):
+            raise MissionTaskValidationError("mission template must decode to an object")
+        return template_payload
+
+    def _mission_template_path(self, payload: dict[str, Any]) -> Path:
+        templates_root = str(self.get_parameter("mission_templates_path").value or "").strip()
+        template_path_value = payload.get("template_path", "")
+        template_id = payload.get("template_id", "")
+
+        if template_path_value:
+            if not isinstance(template_path_value, str):
+                raise MissionTaskValidationError("template_path must be a string")
+            template_path = Path(template_path_value).expanduser()
+            if not template_path.is_absolute() and templates_root:
+                template_path = Path(templates_root).expanduser() / template_path
+            return template_path
+
+        if not isinstance(template_id, str) or not template_id:
+            raise MissionTaskValidationError("template_id must be a non-empty string")
+
+        root = Path(templates_root).expanduser() if templates_root else Path(".")
+        template_id_path = Path(template_id)
+        candidate_names = [template_id_path]
+        if not template_id_path.suffix:
+            candidate_names.extend(
+                [
+                    template_id_path.with_suffix(".yaml"),
+                    template_id_path.with_suffix(".yml"),
+                    template_id_path.with_suffix(".json"),
+                ]
+            )
+        for candidate_name in candidate_names:
+            candidate = candidate_name if candidate_name.is_absolute() else root / candidate_name
+            if candidate.exists():
+                return candidate
+        return root / candidate_names[0]
+
+    def _mission_template_parameters(
+        self,
+        template_payload: dict[str, Any],
+        request_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        template_params = template_payload.get("parameters", {})
+        request_params = request_payload.get("params", {})
+        if template_params:
+            if not isinstance(template_params, dict):
+                raise MissionTaskValidationError("mission template parameters must be an object")
+            params.update(template_params)
+        if request_params:
+            if not isinstance(request_params, dict):
+                raise MissionTaskValidationError("mission params must be an object")
+            params.update(request_params)
+        return params
+
+    def _render_mission_template_value(self, value: Any, params: dict[str, Any]) -> Any:
+        if isinstance(value, dict):
+            return {key: self._render_mission_template_value(item, params) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._render_mission_template_value(item, params) for item in value]
+        if isinstance(value, str):
+            for key, param_value in params.items():
+                placeholder = "${" + key + "}"
+                if value == placeholder:
+                    return param_value
+                value = value.replace(placeholder, str(param_value))
+        return value
+
+    def _deep_merge_dicts(self, base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(base)
+        for key, value in overlay.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = self._deep_merge_dicts(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
 
     def _execute_prepared_task(
         self,
@@ -577,6 +790,17 @@ class TaskOrchestratorNode(Node):
         if task.task_server_type == "system/stop":
             return self._execute_stop_task(prepared_task, task_id, request)
         if task.task_server_type == "system/wait":
+            timeout_sec = self._effective_timeout_sec(request)
+            if timeout_sec > 0 and prepared_task.duration_sec > timeout_sec:
+                return _TaskExecutionOutcome(
+                    status=TaskStatusV1.ERROR,
+                    result_json="{}",
+                    error_code=ErrorCodeV1.TASK_TIMEOUT,
+                    error_message=(
+                        f"Task timeout exceeded before starting wait: "
+                        f"duration_sec={prepared_task.duration_sec}, timeout_sec={timeout_sec}"
+                    ),
+                )
             return _TaskExecutionOutcome(
                 status=TaskStatusV1.DONE,
                 result_json=self._wait_task.execute(prepared_task).result_json,
@@ -729,6 +953,8 @@ class TaskOrchestratorNode(Node):
                     "subtask_index": index,
                     "total_subtasks": total_subtasks,
                     "max_attempts": subtask.max_attempts,
+                    "retry_backoff_sec": subtask.retry_backoff_sec,
+                    "timeout_sec": subtask.timeout_sec,
                     "allow_skipping": subtask.allow_skipping,
                 },
             )
@@ -841,6 +1067,15 @@ class TaskOrchestratorNode(Node):
             subtask_request.priority = request.priority
             subtask_request.task_data_json = subtask.task_data_json
             subtask_request.tags = list(request.tags)
+            subtask_request.timeout_sec = subtask.timeout_sec
+            subtask_request.metadata_json = request.metadata_json
+            subtask_request.robot_id = request.robot_id
+            subtask_request.fleet_id = request.fleet_id
+            subtask_request.site_id = request.site_id
+            subtask_request.zone_id = request.zone_id
+            subtask_request.operator_id = request.operator_id
+            subtask_request.tenant_id = request.tenant_id
+            subtask_request.trace_id = request.trace_id
 
             child_goal_handle = _ChildGoalHandle(subtask_request)
             last_result = self._execute_task(
@@ -857,6 +1092,9 @@ class TaskOrchestratorNode(Node):
                     skipped=False,
                     attempts=attempt,
                 )
+
+            if attempt < subtask.max_attempts and subtask.retry_backoff_sec > 0:
+                self._retry_sleep(subtask.retry_backoff_sec)
 
         assert last_result is not None
         if subtask.allow_skipping:
@@ -887,6 +1125,336 @@ class TaskOrchestratorNode(Node):
             return subtask.task_id
         return f"{subtask.task_id}/attempt-{attempt}"
 
+    def _queue_until_admitted(
+        self,
+        task: TaskDefinition,
+        request: ExecuteTaskV1.Goal,
+        goal_handle: Any,
+        ignored_active_task_ids: set[str] | None = None,
+    ) -> ExecuteTaskV1.Result | None:
+        ready_at_ns = self._requested_ready_at_ns(request)
+        now_ns = self._now_ns()
+        queue_requested = (
+            bool(request.queue_on_conflict)
+            or task.queue_on_conflict_default
+            or ready_at_ns > now_ns
+        )
+        if not queue_requested:
+            return self._deadline_result_if_elapsed(request)
+
+        deadline_result = self._deadline_result_if_elapsed(request)
+        if deadline_result is not None:
+            return deadline_result
+
+        with self._queue_condition:
+            if self._queue_max_size and len(self._queued_tasks) >= self._queue_max_size:
+                return self._make_result(
+                    request=request,
+                    task_id=request.task_id,
+                    status=TaskStatusV1.REJECTED,
+                    error_code=ErrorCodeV1.POLICY_REJECTED,
+                    error_message="Task queue is full.",
+                    created_at=request.created_at,
+                    started_at=request.created_at,
+                    finished_at=self.get_clock().now().to_msg(),
+                )
+
+            self._queue_sequence += 1
+            entry = _QueuedTaskEntry(
+                task_id=request.task_id,
+                task_name=request.task_name,
+                priority=request.priority,
+                enqueued_index=self._queue_sequence,
+                ready_at_ns=ready_at_ns,
+            )
+            self._queued_tasks[entry.task_id] = entry
+            self._store_queued_task_record(request, entry)
+            self._publish_queued_task_event(request, entry)
+
+            while True:
+                if self._goal_cancel_requested(goal_handle):
+                    self._queued_tasks.pop(entry.task_id, None)
+                    self._notify_queue_locked()
+                    finished_at = self.get_clock().now().to_msg()
+                    return self._make_result(
+                        request=request,
+                        task_id=request.task_id,
+                        status=TaskStatusV1.CANCELED,
+                        error_code=ErrorCodeV1.TASK_CANCEL_FAILED,
+                        error_message="Queued task was canceled before start.",
+                        created_at=request.created_at,
+                        started_at=request.created_at,
+                        finished_at=finished_at,
+                    )
+
+                deadline_result = self._deadline_result_if_elapsed(request)
+                if deadline_result is not None:
+                    self._queued_tasks.pop(entry.task_id, None)
+                    self._notify_queue_locked()
+                    return deadline_result
+
+                now_ns = self._now_ns()
+                policy_error = self._apply_start_policy(task, ignored_active_task_ids=ignored_active_task_ids)
+                if now_ns >= entry.ready_at_ns and not policy_error and self._is_queue_head_locked(entry, now_ns):
+                    self._queued_tasks.pop(entry.task_id, None)
+                    self._notify_queue_locked()
+                    self._publish_dequeued_task_event(request, entry)
+                    return None
+
+                wait_sec = self._queue_poll_interval_sec
+                if entry.ready_at_ns > now_ns:
+                    wait_sec = min(wait_sec, max(0.001, (entry.ready_at_ns - now_ns) / 1_000_000_000.0))
+                self._queue_condition.wait(timeout=wait_sec)
+
+    def _publish_queued_task_event(self, request: ExecuteTaskV1.Goal, entry: _QueuedTaskEntry) -> None:
+        queue_data = {
+            "ready_at_ns": entry.ready_at_ns,
+            "queue_position": self._queue_position(entry),
+            **self._request_scheduling_observability_data(request),
+            **self._request_context_observability_data(request),
+        }
+        self._publish_event(
+            event_type="task.queued",
+            task_id=request.task_id,
+            task_name=request.task_name,
+            source=request.source,
+            correlation_id=request.correlation_id,
+            previous_status=TaskStatusV1.RECEIVED,
+            status=TaskStatusV1.QUEUED,
+            priority=request.priority,
+            created_at=request.created_at,
+            data=queue_data,
+            context=request,
+        )
+        self._publish_task_feedback(
+            task_id=request.task_id,
+            task_name=request.task_name,
+            source=request.source,
+            correlation_id=request.correlation_id,
+            progress=0.0,
+            feedback={
+                "status": TaskStatusV1.QUEUED,
+                "event_type": "task.queued",
+                "queue_position": queue_data["queue_position"],
+            },
+            priority=request.priority,
+            created_at=request.created_at,
+            status=TaskStatusV1.QUEUED,
+            context=request,
+        )
+
+    def _publish_dequeued_task_event(self, request: ExecuteTaskV1.Goal, entry: _QueuedTaskEntry) -> None:
+        self._publish_event(
+            event_type="task.dequeued",
+            task_id=request.task_id,
+            task_name=request.task_name,
+            source=request.source,
+            correlation_id=request.correlation_id,
+            previous_status=TaskStatusV1.QUEUED,
+            status=TaskStatusV1.QUEUED,
+            priority=request.priority,
+            created_at=request.created_at,
+            data={
+                "ready_at_ns": entry.ready_at_ns,
+                **self._request_scheduling_observability_data(request),
+                **self._request_context_observability_data(request),
+            },
+            context=request,
+        )
+
+    def _store_queued_task_record(self, request: ExecuteTaskV1.Goal, entry: _QueuedTaskEntry) -> None:
+        result = TaskResultV1()
+        result.api_version = self.api_version
+        result.task_id = request.task_id
+        result.task_name = request.task_name
+        result.source = request.source
+        result.priority = request.priority
+        result.correlation_id = request.correlation_id
+        result.status = TaskStatusV1.QUEUED
+        result.result_json = "{}"
+        result.created_at = request.created_at
+        self._copy_public_context(request, result)
+
+        record = TaskRecordV1()
+        record.result = result
+        record.active = False
+        record.task_data_json = request.task_data_json
+        record.tags = list(request.tags)
+        self._copy_public_context(request, record)
+        self._set_task_record(entry.task_id, record)
+
+    def _is_queue_head_locked(self, entry: _QueuedTaskEntry, now_ns: int) -> bool:
+        ready_entries = [item for item in self._queued_tasks.values() if item.ready_at_ns <= now_ns]
+        if not ready_entries:
+            return False
+        head = min(ready_entries, key=lambda item: (-item.priority, item.enqueued_index))
+        return head.task_id == entry.task_id
+
+    def _queue_position(self, entry: _QueuedTaskEntry) -> int:
+        with self._queue_condition:
+            entries = sorted(
+                self._queued_tasks.values(),
+                key=lambda item: (item.ready_at_ns, -item.priority, item.enqueued_index),
+            )
+            for index, item in enumerate(entries, start=1):
+                if item.task_id == entry.task_id:
+                    return index
+        return 0
+
+    def _notify_queue(self) -> None:
+        with self._queue_condition:
+            self._notify_queue_locked()
+
+    def _notify_queue_locked(self) -> None:
+        self._queue_condition.notify_all()
+
+    def _normalize_request_metadata(self, request: ExecuteTaskV1.Goal) -> str:
+        if request.delay_sec < 0:
+            return "delay_sec must be non-negative"
+        if request.timeout_sec < 0:
+            return "timeout_sec must be non-negative"
+
+        metadata_json = request.metadata_json or "{}"
+        try:
+            metadata = json.loads(metadata_json)
+        except json.JSONDecodeError as exc:
+            return f"metadata_json is not valid JSON: {exc.msg}"
+        if not isinstance(metadata, dict):
+            return "metadata_json must decode to an object"
+        request.metadata_json = self._json_dumps(metadata)
+        return ""
+
+    def _claim_or_get_idempotent_result(self, request: ExecuteTaskV1.Goal) -> ExecuteTaskV1.Result | None:
+        if not request.idempotency_key:
+            return None
+
+        with self._queue_condition:
+            existing_task_id = self._idempotency_task_ids.get(request.idempotency_key)
+            if not existing_task_id:
+                self._idempotency_task_ids[request.idempotency_key] = request.task_id
+                return None
+
+        record = self._task_records.get(existing_task_id)
+        if record is None and self._storage is not None:
+            record = self._stored_task_record(existing_task_id)
+        if record is not None and record.result.status in self._terminal_statuses():
+            return self._task_result_to_execute_result(record.result)
+
+        now = self.get_clock().now().to_msg()
+        return self._make_result(
+            request=request,
+            task_id=request.task_id,
+            status=TaskStatusV1.REJECTED,
+            error_code=ErrorCodeV1.DUPLICATE_TASK_ID,
+            error_message=(
+                f"Idempotency key is already claimed by task {existing_task_id}: "
+                f"{request.idempotency_key}"
+            ),
+            created_at=request.created_at,
+            started_at=now,
+            finished_at=now,
+        )
+
+    def _terminal_statuses(self) -> set[str]:
+        return {
+            TaskStatusV1.DONE,
+            TaskStatusV1.ERROR,
+            TaskStatusV1.CANCELED,
+            TaskStatusV1.SKIPPED,
+            TaskStatusV1.REJECTED,
+        }
+
+    def _requested_ready_at_ns(self, request: ExecuteTaskV1.Goal) -> int:
+        now_ns = self._now_ns()
+        ready_at_ns = now_ns
+        if self._time_is_set(request.scheduled_at):
+            ready_at_ns = max(ready_at_ns, self._time_to_ns(request.scheduled_at))
+        if request.delay_sec > 0:
+            ready_at_ns = max(ready_at_ns, now_ns + int(request.delay_sec * 1_000_000_000))
+        return ready_at_ns
+
+    def _deadline_result_if_elapsed(self, request: ExecuteTaskV1.Goal) -> ExecuteTaskV1.Result | None:
+        if not self._time_is_set(request.deadline_at):
+            return None
+        if self._now_ns() <= self._time_to_ns(request.deadline_at):
+            return None
+        now = self.get_clock().now().to_msg()
+        return self._make_result(
+            request=request,
+            task_id=request.task_id,
+            status=TaskStatusV1.REJECTED,
+            error_code=ErrorCodeV1.DEADLINE_EXCEEDED,
+            error_message="Task deadline elapsed before start.",
+            created_at=request.created_at,
+            started_at=now,
+            finished_at=now,
+        )
+
+    def _apply_terminal_deadline(
+        self,
+        request: ExecuteTaskV1.Goal,
+        outcome: _TaskExecutionOutcome,
+        finished_at: Any,
+    ) -> _TaskExecutionOutcome:
+        if outcome.status != TaskStatusV1.DONE:
+            return outcome
+        if not self._time_is_set(request.deadline_at):
+            return outcome
+        if self._time_to_ns(finished_at) <= self._time_to_ns(request.deadline_at):
+            return outcome
+        return _TaskExecutionOutcome(
+            status=TaskStatusV1.ERROR,
+            error_code=ErrorCodeV1.DEADLINE_EXCEEDED,
+            error_message="Task deadline elapsed before completion.",
+            result_json=outcome.result_json,
+        )
+
+    def _effective_timeout_sec(self, request: ExecuteTaskV1.Goal) -> float:
+        candidates: list[float] = []
+        if request.timeout_sec > 0:
+            candidates.append(float(request.timeout_sec))
+        if self._time_is_set(request.deadline_at):
+            remaining_sec = (self._time_to_ns(request.deadline_at) - self._now_ns()) / 1_000_000_000.0
+            if remaining_sec > 0:
+                candidates.append(remaining_sec)
+        return min(candidates) if candidates else 0.0
+
+    def _task_with_request_timeout(self, task: TaskDefinition, request: ExecuteTaskV1.Goal) -> TaskDefinition:
+        timeout_sec = self._effective_timeout_sec(request)
+        if timeout_sec <= 0:
+            return task
+        return replace(task, cancel_timeout=timeout_sec)
+
+    def _goal_cancel_requested(self, goal_handle: Any) -> bool:
+        value = getattr(goal_handle, "is_cancel_requested", False)
+        return bool(value() if callable(value) else value)
+
+    def _now_ns(self) -> int:
+        return self._time_to_ns(self.get_clock().now().to_msg())
+
+    def _time_to_ns(self, value: Any) -> int:
+        return int(getattr(value, "sec", 0)) * 1_000_000_000 + int(getattr(value, "nanosec", 0))
+
+    def _task_result_to_execute_result(self, source: TaskResultV1) -> ExecuteTaskV1.Result:
+        result = ExecuteTaskV1.Result()
+        result.api_version = source.api_version
+        result.task_id = source.task_id
+        result.task_name = source.task_name
+        result.source = source.source
+        result.priority = source.priority
+        result.correlation_id = source.correlation_id
+        result.status = source.status
+        result.error_code = source.error_code
+        result.error_message = source.error_message
+        result.result_json = source.result_json
+        result.created_at = source.created_at
+        result.started_at = source.started_at
+        result.finished_at = source.finished_at
+        result.duration_sec = source.duration_sec
+        result.total_duration_sec = source.total_duration_sec
+        self._copy_public_context(source, result)
+        return result
+
     def _apply_start_policy(
         self,
         task: TaskDefinition,
@@ -913,6 +1481,28 @@ class TaskOrchestratorNode(Node):
         if blocking_tasks:
             blocking_task_ids = ", ".join(task.task_id for task in blocking_tasks)
             return f"Active blocking task prevents starting {task.task_name}: {blocking_task_ids}"
+
+        requested_resources = set(task.resources)
+        if requested_resources:
+            for active_task in self._active_tasks.list():
+                if active_task.task_id in ignored_active_ids:
+                    continue
+                shared_resources = requested_resources.intersection(active_task.resources)
+                if shared_resources:
+                    return (
+                        f"Task {task.task_name} conflicts with active task {active_task.task_id} "
+                        f"on resources: {', '.join(sorted(shared_resources))}"
+                    )
+
+        if task.task_group:
+            for active_task in self._active_tasks.list():
+                if active_task.task_id in ignored_active_ids:
+                    continue
+                if active_task.task_group == task.task_group:
+                    return (
+                        f"Task {task.task_name} conflicts with active task {active_task.task_id} "
+                        f"in task group: {task.task_group}"
+                    )
 
         return ""
 
@@ -977,6 +1567,12 @@ class TaskOrchestratorNode(Node):
         except Exception as exc:  # noqa: BLE001 - storage must not break ROS2 service calls.
             self.get_logger().error(f"Failed to query SQLite task records: {exc}")
             return []
+
+    def _current_record_status(self, task_id: str) -> str:
+        record = self._task_records.get(task_id)
+        if record is None:
+            return ""
+        return record.result.status
 
     def _get_task(self, request: GetTaskV1.Request, response: GetTaskV1.Response) -> GetTaskV1.Response:
         record = self._task_records.get(request.task_id)
@@ -1242,12 +1838,14 @@ class TaskOrchestratorNode(Node):
         result.status = TaskStatusV1.RECEIVED
         result.result_json = "{}"
         result.created_at = created_at
+        self._copy_public_context(request, result)
 
         record = TaskRecordV1()
         record.result = result
         record.active = False
         record.task_data_json = request.task_data_json
         record.tags = list(request.tags)
+        self._copy_public_context(request, record)
         self._set_task_record(task_id, record)
 
     def _store_active_task_record(self, task: ActiveTaskEntry, task_data_json: str) -> None:
@@ -1262,6 +1860,7 @@ class TaskOrchestratorNode(Node):
         if existing_record is not None:
             record.task_data_json = existing_record.task_data_json
             record.tags = list(existing_record.tags)
+            self._copy_public_context(existing_record, record)
         self._set_task_record(result.task_id, record)
 
     def _set_task_record(self, task_id: str, record: TaskRecordV1) -> None:
@@ -1296,12 +1895,14 @@ class TaskOrchestratorNode(Node):
         result.result_json = "{}"
         result.created_at = task.created_at
         result.started_at = task.started_at
+        self._copy_public_context(task, result)
 
         record = TaskRecordV1()
         record.result = result
         record.active = True
         record.task_data_json = task_data_json
         record.tags = list(task.tags)
+        self._copy_public_context(task, record)
         return record
 
     def _copy_task_record(self, record: TaskRecordV1) -> TaskRecordV1:
@@ -1310,6 +1911,7 @@ class TaskOrchestratorNode(Node):
         copied_record.active = record.active
         copied_record.task_data_json = record.task_data_json
         copied_record.tags = list(record.tags)
+        self._copy_public_context(record, copied_record)
         self._sync_task_record_metadata(copied_record)
         return copied_record
 
@@ -1328,7 +1930,15 @@ class TaskOrchestratorNode(Node):
         copied_result.created_at = result.created_at
         copied_result.started_at = result.started_at
         copied_result.finished_at = result.finished_at
+        copied_result.duration_sec = result.duration_sec
+        copied_result.total_duration_sec = result.total_duration_sec
+        self._copy_public_context(result, copied_result)
         return copied_result
+
+    def _copy_public_context(self, source: Any, target: Any) -> None:
+        for field_name in _PUBLIC_CONTEXT_FIELDS:
+            if hasattr(source, field_name) and hasattr(target, field_name):
+                setattr(target, field_name, getattr(source, field_name))
 
     def _execute_result_to_task_result_msg(self, result: ExecuteTaskV1.Result) -> TaskResultV1:
         msg = TaskResultV1()
@@ -1345,6 +1955,9 @@ class TaskOrchestratorNode(Node):
         msg.created_at = result.created_at
         msg.started_at = result.started_at
         msg.finished_at = result.finished_at
+        msg.duration_sec = result.duration_sec
+        msg.total_duration_sec = result.total_duration_sec
+        self._copy_public_context(result, msg)
         return msg
 
     def _sync_task_record_metadata(self, record: TaskRecordV1) -> None:
@@ -1362,6 +1975,17 @@ class TaskOrchestratorNode(Node):
         record.error_code = result.error_code
         record.error_message = result.error_message
         record.result_json = result.result_json
+        record.duration_sec = result.duration_sec
+        record.total_duration_sec = result.total_duration_sec
+        record.idempotency_key = result.idempotency_key
+        record.metadata_json = result.metadata_json
+        record.robot_id = result.robot_id
+        record.fleet_id = result.fleet_id
+        record.site_id = result.site_id
+        record.zone_id = result.zone_id
+        record.operator_id = result.operator_id
+        record.tenant_id = result.tenant_id
+        record.trace_id = result.trace_id
 
     def _publish_mission_lifecycle_event(
         self,
@@ -1605,6 +2229,7 @@ class TaskOrchestratorNode(Node):
         error_code: str = "",
         error_message: str = "",
         result_json: str = "{}",
+        context: Any | None = None,
     ) -> None:
         msg = TaskFeedbackV1()
         msg.api_version = self.api_version
@@ -1623,6 +2248,10 @@ class TaskOrchestratorNode(Node):
         msg.error_code = error_code
         msg.error_message = error_message
         msg.result_json = result_json
+        msg.duration_sec = self._duration_sec(msg.started_at, msg.finished_at)
+        msg.total_duration_sec = self._duration_sec(msg.created_at, msg.finished_at)
+        if context is not None:
+            self._copy_public_context(context, msg)
         msg.progress = progress
         msg.feedback_json = self._json_dumps(feedback)
         msg.stamp = self.get_clock().now().to_msg()
@@ -1645,6 +2274,7 @@ class TaskOrchestratorNode(Node):
         finished_at: Any | None = None,
         result_json: str = "{}",
         data: dict[str, Any] | None = None,
+        context: Any | None = None,
     ) -> None:
         msg = TaskEventV1()
         msg.api_version = self.api_version
@@ -1666,6 +2296,10 @@ class TaskOrchestratorNode(Node):
         msg.error_code = error_code
         msg.error_message = error_message
         msg.result_json = result_json
+        msg.duration_sec = self._duration_sec(msg.started_at, msg.finished_at)
+        msg.total_duration_sec = self._duration_sec(msg.created_at, msg.finished_at)
+        if context is not None:
+            self._copy_public_context(context, msg)
         msg.data_json = self._json_dumps(data or {})
         msg.stamp = self.get_clock().now().to_msg()
         self._set_event_record(msg)
@@ -1716,6 +2350,9 @@ class TaskOrchestratorNode(Node):
         copied_event.error_message = event.error_message
         copied_event.result_json = event.result_json
         copied_event.data_json = event.data_json
+        copied_event.duration_sec = event.duration_sec
+        copied_event.total_duration_sec = event.total_duration_sec
+        self._copy_public_context(event, copied_event)
         copied_event.stamp = event.stamp
         return copied_event
 
@@ -1743,6 +2380,7 @@ class TaskOrchestratorNode(Node):
             error_code=result.error_code,
             error_message=result.error_message,
             result_json=result.result_json,
+            context=result,
         )
         self._publish_event(
             event_type=event_type,
@@ -1760,9 +2398,12 @@ class TaskOrchestratorNode(Node):
             finished_at=result.finished_at,
             result_json=result.result_json,
             data=terminal_data,
+            context=result,
         )
 
     def _terminal_event_type(self, status: str) -> str:
+        if status == TaskStatusV1.ERROR:
+            return "task.failed"
         if status == TaskStatusV1.DONE:
             return "task.completed"
         if status == TaskStatusV1.CANCELED:
@@ -1785,6 +2426,33 @@ class TaskOrchestratorNode(Node):
             "priority": request.priority,
             "tags": list(request.tags),
             "resources": list(task.resources),
+            "task_group": task.task_group,
+            "capability_tags": list(task.capability_tags),
+            "queue_on_conflict_default": task.queue_on_conflict_default,
+            **self._request_scheduling_observability_data(request),
+            **self._request_context_observability_data(request),
+        }
+
+    def _request_scheduling_observability_data(self, request: ExecuteTaskV1.Goal) -> dict[str, Any]:
+        return {
+            "scheduled_at_set": self._time_is_set(request.scheduled_at),
+            "deadline_at_set": self._time_is_set(request.deadline_at),
+            "delay_sec": float(request.delay_sec),
+            "timeout_sec": float(request.timeout_sec),
+            "queue_on_conflict": bool(request.queue_on_conflict),
+        }
+
+    def _request_context_observability_data(self, request: Any) -> dict[str, Any]:
+        return {
+            "idempotency_key": getattr(request, "idempotency_key", ""),
+            "robot_id": getattr(request, "robot_id", ""),
+            "fleet_id": getattr(request, "fleet_id", ""),
+            "site_id": getattr(request, "site_id", ""),
+            "zone_id": getattr(request, "zone_id", ""),
+            "operator_id": getattr(request, "operator_id", ""),
+            "tenant_id": getattr(request, "tenant_id", ""),
+            "trace_id": getattr(request, "trace_id", ""),
+            "has_metadata_json": bool(getattr(request, "metadata_json", "")),
         }
 
     def _terminal_observability_data(self, result: ExecuteTaskV1.Result) -> dict[str, Any]:
@@ -1794,8 +2462,8 @@ class TaskOrchestratorNode(Node):
             "has_error": bool(result.error_code or result.error_message),
             "has_result_json": bool(result.result_json and result.result_json != "{}"),
             "result_size": len(result.result_json or ""),
-            "duration_sec": self._duration_sec(result.started_at, result.finished_at),
-            "total_duration_sec": self._duration_sec(result.created_at, result.finished_at),
+            "duration_sec": result.duration_sec,
+            "total_duration_sec": result.total_duration_sec,
         }
 
     def _duration_sec(self, start_time: Any, finish_time: Any) -> float:
@@ -1833,6 +2501,14 @@ class TaskOrchestratorNode(Node):
             "task_name": event.task_name,
             "source": event.source,
             "correlation_id": event.correlation_id,
+            "trace_id": event.trace_id,
+            "robot_id": event.robot_id,
+            "fleet_id": event.fleet_id,
+            "site_id": event.site_id,
+            "zone_id": event.zone_id,
+            "operator_id": event.operator_id,
+            "tenant_id": event.tenant_id,
+            "idempotency_key": event.idempotency_key,
             "previous_status": event.previous_status,
             "status": event.status,
             "error_code": event.error_code,
@@ -1875,6 +2551,9 @@ class TaskOrchestratorNode(Node):
         result.created_at = created_at
         result.started_at = started_at
         result.finished_at = finished_at
+        result.duration_sec = self._duration_sec(started_at, finished_at)
+        result.total_duration_sec = self._duration_sec(created_at, finished_at)
+        self._copy_public_context(request, result)
         return result
 
     def _task_definition_to_msg(self, task: TaskDefinition) -> TaskSpecV1:
@@ -1896,6 +2575,9 @@ class TaskOrchestratorNode(Node):
         msg.cancel_timeout = task.cancel_timeout
         msg.resources = list(task.resources)
         msg.tags = list(task.tags)
+        msg.task_group = task.task_group
+        msg.capability_tags = list(task.capability_tags)
+        msg.queue_on_conflict_default = task.queue_on_conflict_default
         return msg
 
     def _active_task_to_msg(self, task: ActiveTaskEntry) -> ActiveTaskV1:
@@ -1913,6 +2595,7 @@ class TaskOrchestratorNode(Node):
         msg.error_message = ""
         msg.result_json = "{}"
         msg.tags = list(task.tags)
+        self._copy_public_context(task, msg)
         return msg
 
     def _load_task_registry(self, strict: bool = False) -> TaskRegistry:

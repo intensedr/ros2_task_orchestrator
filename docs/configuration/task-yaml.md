@@ -19,6 +19,9 @@ tasks:
     priority_default: 0
     cancel_timeout: 5.0
     resources: [base, map]
+    task_group: navigation
+    capability_tags: [localization, motion]
+    queue_on_conflict_default: false
     tags: [nav2, navigation, motion]
 ```
 
@@ -45,6 +48,12 @@ tasks:
 - `reentrant`: allows multiple active instances of the same task name.
 - `cancel_timeout`: timeout for action goal cancellation.
 - `resources`: resource labels for conflict and observability metadata.
+- `task_group`: optional single-group lock; active tasks in the same group
+  conflict.
+- `capability_tags`: robot capability labels exposed through task
+  introspection and events.
+- `queue_on_conflict_default`: default queue behavior for this task when
+  admission policy is blocked.
 - `tags`: caller-visible labels copied into task records.
 
 ## Reload Configuration

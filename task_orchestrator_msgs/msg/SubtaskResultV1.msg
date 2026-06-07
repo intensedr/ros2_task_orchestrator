@@ -14,3 +14,4 @@ string result_json
 string subtask_id
 bool skipped
 int32 attempts
+float64 duration_sec

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0 - 2026-06-07
+
+- Added opt-in queued execution with priority ordering for scheduled or
+  conflict-queued task requests.
+- Added execute-task scheduling and timeout fields: `scheduled_at`,
+  `delay_sec`, `deadline_at`, `timeout_sec` and `queue_on_conflict`.
+- Added fleet-safe context fields, idempotency keys, tracing IDs and duration
+  fields to public task results, feedback, events, records and active task
+  messages.
+- Added SQLite persistence for duration, idempotency, tracing and fleet-safe
+  metadata fields.
+- Added resource-lock and task-group admission checks.
+- Added YAML/JSON mission template resolution through `template_path` and
+  `template_id`.
+- Added mission subtask `retry_backoff_sec` support and timeout propagation.
+- Added `DEADLINE_EXCEEDED` as a stable error code.
+- Aligned `task_orchestrator_core/setup.py` version with package metadata.
+- Bumped `task_orchestrator_examples` to `0.2.0` with the new mission template
+  example asset.
+
 ## 0.2.0 - 2026-06-04
 
 - Added ROS2-native public API contract coverage for

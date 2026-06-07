@@ -21,6 +21,8 @@ add a runtime package dependency.
 
 - Task records.
 - Task events.
+- Runtime duration and total duration fields.
+- Idempotency keys, tracing IDs and fleet-safe context fields.
 
 ## Query Behavior
 

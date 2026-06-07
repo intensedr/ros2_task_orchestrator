@@ -12,6 +12,7 @@ string error_code
 string error_message
 string result_json
 float64 duration_sec
+float64 timeout_sec
 ---
 string api_version
 string task_id
@@ -26,6 +27,8 @@ string status
 string error_code
 string error_message
 string result_json
+float64 duration_sec
+float64 total_duration_sec
 ---
 string api_version
 string task_id
@@ -41,4 +44,6 @@ string error_code
 string error_message
 string result_json
 float64 remaining_time_sec
+float64 duration_sec
+float64 total_duration_sec
 builtin_interfaces/Time stamp

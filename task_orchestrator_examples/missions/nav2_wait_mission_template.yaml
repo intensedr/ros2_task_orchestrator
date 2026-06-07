@@ -1,0 +1,14 @@
+parameters:
+  mission_id: nav2-wait-template
+  wait_duration_sec: 1.0
+  wait_timeout_sec: 5.0
+
+mission_id: "${mission_id}"
+subtasks:
+  - subtask_id: wait-before-navigation
+    task_name: system/wait
+    task_data_json:
+      duration_sec: "${wait_duration_sec}"
+    allow_skipping: false
+    max_attempts: 1
+    timeout_sec: "${wait_timeout_sec}"

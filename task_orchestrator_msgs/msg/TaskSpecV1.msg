@@ -23,3 +23,6 @@ int32 priority_default
 float64 cancel_timeout
 string[] resources
 string[] tags
+string task_group
+string[] capability_tags
+bool queue_on_conflict_default

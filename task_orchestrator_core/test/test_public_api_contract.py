@@ -86,15 +86,28 @@ def test_execute_task_action_contract():
     goal.api_version = "v1beta1"
     goal.task_name = "example/task"
     goal.task_data_json = "{}"
+    goal.delay_sec = 1.0
+    goal.timeout_sec = 5.0
+    goal.queue_on_conflict = True
+    goal.robot_id = "robot-1"
+    goal.fleet_id = "fleet-1"
+    goal.trace_id = "trace-1"
 
     assert goal.api_version == "v1beta1"
     assert goal.task_name == "example/task"
     assert goal.task_data_json == "{}"
+    assert goal.delay_sec == 1.0
+    assert goal.timeout_sec == 5.0
+    assert goal.queue_on_conflict is True
+    assert goal.robot_id == "robot-1"
+    assert goal.fleet_id == "fleet-1"
+    assert goal.trace_id == "trace-1"
 
 
 def test_status_and_error_constants():
     assert TaskStatusV1.RECEIVED == "RECEIVED"
     assert TaskStatusV1.ERROR == "ERROR"
+    assert ErrorCodeV1.DEADLINE_EXCEEDED == "DEADLINE_EXCEEDED"
     assert ErrorCodeV1.UNSUPPORTED == "UNSUPPORTED"
 
 

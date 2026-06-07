@@ -27,6 +27,19 @@ class ActiveTaskEntry:
     task_server_type: str = ""
     blocking: bool = False
     cancel_on_stop: bool = False
+    resources: tuple[str, ...] = field(default_factory=tuple)
+    task_group: str = ""
+    capability_tags: tuple[str, ...] = field(default_factory=tuple)
+    robot_id: str = ""
+    fleet_id: str = ""
+    site_id: str = ""
+    zone_id: str = ""
+    operator_id: str = ""
+    tenant_id: str = ""
+    trace_id: str = ""
+    metadata_json: str = ""
+    idempotency_key: str = ""
+    timeout_sec: float = 0.0
     cancel_callback: Callable[[], bool] | None = field(default=None, compare=False, repr=False)
 
 

@@ -13,4 +13,14 @@ string error_message
 string result_json
 float32 progress
 string feedback_json
+float64 duration_sec
+float64 total_duration_sec
+string idempotency_key
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 builtin_interfaces/Time stamp

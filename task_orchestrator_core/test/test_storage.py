@@ -20,6 +20,11 @@ def _record(task_id: str, status: str, source: str = "test") -> TaskRecordV1:
     result.correlation_id = f"{task_id}-corr"
     result.status = status
     result.result_json = "{}"
+    result.duration_sec = 1.0
+    result.total_duration_sec = 2.0
+    result.metadata_json = '{"work_order": "wo-1"}'
+    result.robot_id = "robot-1"
+    result.trace_id = "trace-1"
     result.created_at = _time(1)
     result.started_at = _time(2)
     result.finished_at = _time(3)
@@ -42,6 +47,10 @@ def _event(event_id: str, event_type: str, task_id: str, status: str) -> TaskEve
     event.correlation_id = f"{task_id}-corr"
     event.status = status
     event.data_json = "{}"
+    event.duration_sec = 1.0
+    event.total_duration_sec = 2.0
+    event.robot_id = "robot-1"
+    event.trace_id = "trace-1"
     event.stamp = _time(4)
     return event
 
@@ -76,8 +85,13 @@ def test_sqlite_storage_round_trips_task_records_and_events(tmp_path):
         assert get_record is not None
         assert get_record.result.task_id == "task-1"
         assert get_record.result.finished_at.sec == 3
+        assert get_record.result.duration_sec == 1.0
+        assert get_record.result.robot_id == "robot-1"
+        assert get_record.result.trace_id == "trace-1"
         assert get_record.tags == ["storage"]
         assert [record.result.task_id for record in records] == ["task-2"]
         assert [event.event_type for event in events] == ["task.completed", "task.started"]
+        assert events[0].robot_id == "robot-1"
+        assert events[0].trace_id == "trace-1"
     finally:
         storage.close()

@@ -11,5 +11,12 @@ string status
 string error_code
 string error_message
 string result_json
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
 ActiveTaskV1[] active_tasks
 builtin_interfaces/Time stamp

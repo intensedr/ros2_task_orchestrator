@@ -37,6 +37,9 @@ class TaskDefinition:
     cancel_timeout: float = 5.0
     resources: tuple[str, ...] = field(default_factory=tuple)
     tags: tuple[str, ...] = field(default_factory=tuple)
+    task_group: str = ""
+    capability_tags: tuple[str, ...] = field(default_factory=tuple)
+    queue_on_conflict_default: bool = False
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "TaskDefinition":
@@ -55,6 +58,11 @@ class TaskDefinition:
             raise TaskConfigError(f"topic for {task_name} must be a string")
         if not isinstance(msg_interface, str):
             raise TaskConfigError(f"msg_interface for {task_name} must be a string")
+        task_group = data.get("task_group", "")
+        if task_group is None:
+            task_group = ""
+        if not isinstance(task_group, str):
+            raise TaskConfigError(f"task_group for {task_name} must be a string")
 
         return cls(
             task_name=task_name,
@@ -70,6 +78,9 @@ class TaskDefinition:
             cancel_timeout=float(data.get("cancel_timeout", 5.0)),
             resources=_as_string_list(data.get("resources"), "resources"),
             tags=_as_string_list(data.get("tags"), "tags"),
+            task_group=task_group,
+            capability_tags=_as_string_list(data.get("capability_tags"), "capability_tags"),
+            queue_on_conflict_default=bool(data.get("queue_on_conflict_default", False)),
         )
 
 

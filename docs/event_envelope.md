@@ -22,6 +22,14 @@ are documented in [Public API Reference](public_api_reference.md).
   "source": "fleet-agent",
   "priority": 10,
   "correlation_id": "mission-2026-05-27-0001",
+  "trace_id": "trace-01J00000000000000000000000",
+  "robot_id": "amr-042",
+  "fleet_id": "warehouse-a",
+  "site_id": "site-1",
+  "zone_id": "zone-7",
+  "operator_id": "",
+  "tenant_id": "",
+  "idempotency_key": "mission-2026-05-27-0001/start",
   "created_at": "2026-05-27T11:59:58.000000Z",
   "started_at": "2026-05-27T12:00:00.000000Z",
   "finished_at": "",
@@ -30,8 +38,9 @@ are documented in [Public API Reference](public_api_reference.md).
   "error_code": "",
   "error_message": "",
   "result_json": "{}",
+  "duration_sec": 0.0,
+  "total_duration_sec": 2.0,
   "data": {
-    "robot_id": "amr-042",
     "mission_id": "mission-2026-05-27-0001"
   },
   "stamp": "2026-05-27T12:00:00.000000Z"
@@ -52,6 +61,7 @@ Task events:
 
 - `task.received`
 - `task.queued`
+- `task.dequeued`
 - `task.started`
 - `task.feedback`
 - `task.completed`
@@ -96,9 +106,10 @@ System events:
 ## Data Field Rules
 
 - `data_json` and bridge `data` are for structured context.
-- `task.received` data includes generated-ID metadata, priority and tags.
+- `task.received` data includes generated-ID metadata, priority, scheduling
+  hints, fleet-safe context fields and tags.
 - `task.started` data includes task definition flags such as task server type,
-  blocking, reentrant and cancellation behavior.
+  blocking, reentrant, resource locks, task groups and cancellation behavior.
 - Terminal task event data includes status, error presence, result presence and
   duration fields.
 - Product-specific data can be included by clients, but the core must not depend
