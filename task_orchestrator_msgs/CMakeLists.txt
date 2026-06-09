@@ -33,6 +33,7 @@ set(srv_files
   "srv/ReloadConfigV1.srv"
   "srv/ResumeTasksV1.srv"
   "srv/StopTasksV1.srv"
+  "srv/ValidateTaskV1.srv"
 )
 
 set(action_files

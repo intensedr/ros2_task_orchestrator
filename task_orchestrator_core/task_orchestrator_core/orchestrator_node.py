@@ -16,6 +16,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+from rosidl_runtime_py.utilities import get_action, get_service
 
 from task_orchestrator_core.active_tasks import ActiveTaskEntry, ActiveTaskRegistry, DuplicateActiveTaskError
 from task_orchestrator_core.clients.action_task import (
@@ -45,11 +46,13 @@ from task_orchestrator_core.constants import (
     SERVICE_LIST_TASKS,
     SERVICE_PAUSE_TASKS,
     SERVICE_RESUME_TASKS,
+    SERVICE_VALIDATE_TASK,
     TOPIC_ACTIVE_TASKS,
     TOPIC_EVENTS,
     TOPIC_FEEDBACK,
     TOPIC_RESULTS,
 )
+from task_orchestrator_core.error_model import result_json_with_error
 from task_orchestrator_core.registry import TaskRegistry
 from task_orchestrator_core.storage import SQLiteTaskStorage
 from task_orchestrator_core.system_tasks.control import (
@@ -90,6 +93,7 @@ from task_orchestrator_msgs.srv import (
     ReloadConfigV1,
     ResumeTasksV1,
     StopTasksV1,
+    ValidateTaskV1,
 )
 
 
@@ -216,6 +220,12 @@ class TaskOrchestratorNode(Node):
             self._get_task,
             callback_group=self._callback_group,
         )
+        self._validate_task_service = self.create_service(
+            ValidateTaskV1,
+            SERVICE_VALIDATE_TASK,
+            self._validate_task,
+            callback_group=self._callback_group,
+        )
         self._list_task_records_service = self.create_service(
             ListTaskRecordsV1,
             "/task_orchestrator/list_task_records",
@@ -254,6 +264,7 @@ class TaskOrchestratorNode(Node):
         )
 
         self._publish_empty_active_tasks()
+        self._recover_persisted_queued_tasks()
         self.get_logger().info("Task orchestrator started.")
 
     def destroy_node(self) -> bool:
@@ -994,6 +1005,15 @@ class TaskOrchestratorNode(Node):
                 continue
 
             mission_status = mission_status_from_subtask_result_status(subtask_result.status)
+            pending_status = TaskStatusV1.CANCELED if mission_status == TaskStatusV1.CANCELED else TaskStatusV1.PENDING
+            mission_results.extend(
+                self._remaining_mission_subtask_results(
+                    subtasks=mission.subtasks[index:],
+                    status=pending_status,
+                    error_code=subtask_result.error_code,
+                    error_message=subtask_result.error_message,
+                )
+            )
             terminal_event_type = "mission.canceled" if mission_status == TaskStatusV1.CANCELED else "mission.failed"
             self._publish_mission_lifecycle_event(
                 event_type=terminal_event_type,
@@ -1007,7 +1027,7 @@ class TaskOrchestratorNode(Node):
                 error_message=subtask_result.error_message,
                 priority=request.priority,
                 data={
-                    "completed_subtasks": len(mission_results),
+                    "completed_subtasks": index,
                     "total_subtasks": total_subtasks,
                     "failed_subtask_id": subtask_result.subtask_id,
                     "failed_task_id": subtask_result.task_id,
@@ -1124,6 +1144,27 @@ class TaskOrchestratorNode(Node):
         if attempt == 1:
             return subtask.task_id
         return f"{subtask.task_id}/attempt-{attempt}"
+
+    def _remaining_mission_subtask_results(
+        self,
+        subtasks: tuple[MissionSubtask, ...],
+        status: str,
+        error_code: str,
+        error_message: str,
+    ) -> list[MissionSubtaskResult]:
+        return [
+            MissionSubtaskResult(
+                subtask_id=subtask.subtask_id,
+                task_id=subtask.task_id,
+                task_name=subtask.task_name,
+                status=status,
+                skipped=False,
+                attempts=0,
+                error_code=error_code,
+                error_message=error_message,
+            )
+            for subtask in subtasks
+        ]
 
     def _queue_until_admitted(
         self,
@@ -1280,6 +1321,7 @@ class TaskOrchestratorNode(Node):
         record.active = False
         record.task_data_json = request.task_data_json
         record.tags = list(request.tags)
+        self._copy_request_scheduling(request, record)
         self._copy_public_context(request, record)
         self._set_task_record(entry.task_id, record)
 
@@ -1330,9 +1372,21 @@ class TaskOrchestratorNode(Node):
 
         with self._queue_condition:
             existing_task_id = self._idempotency_task_ids.get(request.idempotency_key)
-            if not existing_task_id:
+        if not existing_task_id:
+            existing_record = self._stored_task_record_by_idempotency_key(request.idempotency_key)
+            if existing_record is not None:
+                existing_task_id = existing_record.result.task_id
+                if existing_task_id == request.task_id and existing_record.result.status == TaskStatusV1.QUEUED:
+                    with self._queue_condition:
+                        self._idempotency_task_ids[request.idempotency_key] = request.task_id
+                    return None
+                if existing_record.result.status in self._terminal_statuses():
+                    return self._task_result_to_execute_result(existing_record.result)
+
+        if not existing_task_id:
+            with self._queue_condition:
                 self._idempotency_task_ids[request.idempotency_key] = request.task_id
-                return None
+            return None
 
         record = self._task_records.get(existing_task_id)
         if record is None and self._storage is not None:
@@ -1370,7 +1424,10 @@ class TaskOrchestratorNode(Node):
         if self._time_is_set(request.scheduled_at):
             ready_at_ns = max(ready_at_ns, self._time_to_ns(request.scheduled_at))
         if request.delay_sec > 0:
-            ready_at_ns = max(ready_at_ns, now_ns + int(request.delay_sec * 1_000_000_000))
+            ready_at_ns = max(
+                ready_at_ns,
+                self._time_to_ns(request.created_at) + int(request.delay_sec * 1_000_000_000),
+            )
         return ready_at_ns
 
     def _deadline_result_if_elapsed(self, request: ExecuteTaskV1.Goal) -> ExecuteTaskV1.Result | None:
@@ -1539,6 +1596,14 @@ class TaskOrchestratorNode(Node):
             and (not request.status or event.status == request.status)
             and (not request.source or event.source == request.source)
             and (not request.correlation_id or event.correlation_id == request.correlation_id)
+            and (not request.robot_id or event.robot_id == request.robot_id)
+            and (not request.fleet_id or event.fleet_id == request.fleet_id)
+            and (not request.site_id or event.site_id == request.site_id)
+            and (not request.zone_id or event.zone_id == request.zone_id)
+            and (not request.operator_id or event.operator_id == request.operator_id)
+            and (not request.tenant_id or event.tenant_id == request.tenant_id)
+            and (not request.trace_id or event.trace_id == request.trace_id)
+            and (not request.idempotency_key or event.idempotency_key == request.idempotency_key)
         )
 
     def _stored_events(self, request: ListEventsV1.Request) -> list[TaskEventV1]:
@@ -1568,6 +1633,86 @@ class TaskOrchestratorNode(Node):
             self.get_logger().error(f"Failed to query SQLite task records: {exc}")
             return []
 
+    def _stored_queued_task_records(self) -> list[TaskRecordV1]:
+        if self._storage is None:
+            return []
+        try:
+            return self._storage.list_queued_task_records()
+        except Exception as exc:  # noqa: BLE001 - storage must not break startup recovery.
+            self.get_logger().error(f"Failed to query SQLite queued task records: {exc}")
+            return []
+
+    def _stored_task_record_by_idempotency_key(self, idempotency_key: str) -> TaskRecordV1 | None:
+        if self._storage is None:
+            return None
+        try:
+            return self._storage.get_task_record_by_idempotency_key(idempotency_key)
+        except Exception as exc:  # noqa: BLE001 - storage must not break task submission.
+            self.get_logger().error(f"Failed to query SQLite idempotency key {idempotency_key}: {exc}")
+            return None
+
+    def _recover_persisted_queued_tasks(self) -> None:
+        queued_records = self._stored_queued_task_records()
+        if not queued_records:
+            return
+
+        self.get_logger().info(f"Recovering {len(queued_records)} queued task(s) from SQLite.")
+        for record in queued_records:
+            self._publish_event(
+                event_type="task.recovered",
+                task_id=record.result.task_id,
+                task_name=record.result.task_name,
+                source=record.result.source,
+                correlation_id=record.result.correlation_id,
+                status=TaskStatusV1.QUEUED,
+                priority=record.result.priority,
+                created_at=record.result.created_at,
+                data={
+                    "recovery_source": "sqlite",
+                    "task_data_json_present": bool(record.task_data_json),
+                    "scheduled_at_set": self._time_is_set(record.scheduled_at),
+                    "delay_sec": float(record.delay_sec),
+                    "deadline_at_set": self._time_is_set(record.deadline_at),
+                    "timeout_sec": float(record.timeout_sec),
+                    "queue_on_conflict": bool(record.queue_on_conflict),
+                },
+                context=record,
+            )
+            thread = threading.Thread(
+                target=self._execute_recovered_queued_task,
+                args=(self._copy_task_record(record),),
+                name=f"task-orchestrator-recover-{record.result.task_id}",
+                daemon=True,
+            )
+            thread.start()
+
+    def _execute_recovered_queued_task(self, record: TaskRecordV1) -> None:
+        try:
+            request = self._task_record_to_execute_goal(record)
+            self._execute_task(_ChildGoalHandle(request))
+        except Exception as exc:  # noqa: BLE001 - recovery must not stop node startup.
+            self.get_logger().error(f"Failed to recover queued task {record.result.task_id}: {exc}")
+
+    def _task_record_to_execute_goal(self, record: TaskRecordV1) -> ExecuteTaskV1.Goal:
+        result = record.result
+        request = ExecuteTaskV1.Goal()
+        request.api_version = result.api_version or self.api_version
+        request.task_id = result.task_id
+        request.task_name = result.task_name
+        request.source = result.source
+        request.priority = result.priority
+        request.correlation_id = result.correlation_id
+        request.created_at = result.created_at
+        request.task_data_json = record.task_data_json
+        request.tags = list(record.tags)
+        request.scheduled_at = record.scheduled_at
+        request.delay_sec = record.delay_sec
+        request.deadline_at = record.deadline_at
+        request.timeout_sec = record.timeout_sec
+        request.queue_on_conflict = record.queue_on_conflict
+        self._copy_public_context(record, request)
+        return request
+
     def _current_record_status(self, task_id: str) -> str:
         record = self._task_records.get(task_id)
         if record is None:
@@ -1587,6 +1732,230 @@ class TaskOrchestratorNode(Node):
         if record is not None:
             response.task = self._copy_task_record(record)
         return response
+
+    def _validate_task(
+        self,
+        request: ValidateTaskV1.Request,
+        response: ValidateTaskV1.Response,
+    ) -> ValidateTaskV1.Response:
+        task = self._task_registry.get(request.task_name)
+        if task is None:
+            response.valid = False
+            response.error_code = ErrorCodeV1.UNKNOWN_TASK
+            response.error_message = f"Unknown task: {request.task_name}"
+            response.normalized_task_data_json = request.task_data_json
+            response.schema_json = "{}"
+            return response
+
+        try:
+            response.schema_json = self._task_schema_json(task) if request.include_schema else "{}"
+        except Exception as exc:  # noqa: BLE001 - schema generation is best-effort validation metadata.
+            response.valid = False
+            response.error_code = ErrorCodeV1.TASK_START_FAILED
+            response.error_message = f"Cannot generate task schema: {exc}"
+            response.normalized_task_data_json = request.task_data_json
+            response.schema_json = "{}"
+            return response
+
+        task_id = request.task_id or "validation"
+        validation_goal = ExecuteTaskV1.Goal()
+        validation_goal.api_version = self.api_version
+        validation_goal.task_id = task_id
+        validation_goal.task_name = request.task_name
+        validation_goal.task_data_json = request.task_data_json
+
+        try:
+            normalized_task_data_json = self._normalized_task_data_json(task, request.task_data_json)
+            validation_goal.task_data_json = normalized_task_data_json
+            self._prepare_task(task, validation_goal, task_id)
+        except (
+            ActionTaskDataError,
+            ControlTaskValidationError,
+            MissionTaskValidationError,
+            ServiceTaskDataError,
+            WaitTaskValidationError,
+        ) as exc:
+            response.valid = False
+            response.error_code = ErrorCodeV1.TASK_DATA_PARSING_FAILED
+            response.error_message = str(exc)
+            response.normalized_task_data_json = request.task_data_json
+            return response
+        except (ActionTaskConfigError, ServiceTaskConfigError) as exc:
+            response.valid = False
+            response.error_code = ErrorCodeV1.TASK_START_FAILED
+            response.error_message = str(exc)
+            response.normalized_task_data_json = request.task_data_json
+            return response
+        except NotImplementedError:
+            response.valid = False
+            response.error_code = ErrorCodeV1.UNSUPPORTED
+            response.error_message = f"Task server type is not implemented yet: {task.task_server_type}"
+            response.normalized_task_data_json = request.task_data_json
+            return response
+
+        response.valid = True
+        response.error_code = ""
+        response.error_message = ""
+        response.normalized_task_data_json = normalized_task_data_json
+        return response
+
+    def _normalized_task_data_json(self, task: TaskDefinition, task_data_json: str) -> str:
+        payload_text = task_data_json or "{}"
+        if task.task_server_type == "system/mission":
+            payload_text = self._resolve_mission_task_data_json(payload_text)
+
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            return payload_text
+        if not isinstance(payload, dict):
+            return payload_text
+        return self._json_dumps(payload)
+
+    def _task_schema_json(self, task: TaskDefinition) -> str:
+        schema: dict[str, Any] = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": task.task_name,
+            "type": "object",
+            "additionalProperties": True,
+            "x-task-server-type": task.task_server_type,
+        }
+
+        if task.task_server_type == "system/wait":
+            schema["properties"] = {
+                "duration_sec": {
+                    "type": "number",
+                    "minimum": 0,
+                },
+            }
+            return self._json_dumps(schema)
+        if task.task_server_type == "system/mission":
+            schema["properties"] = self._mission_schema_properties()
+            return self._json_dumps(schema)
+        if task.task_server_type == "system/cancel_task":
+            schema["properties"] = {
+                "task_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "source": {"type": "string"},
+                "correlation_id": {"type": "string"},
+            }
+            return self._json_dumps(schema)
+        if task.task_server_type == "system/stop":
+            schema["properties"] = {
+                "source": {"type": "string"},
+                "correlation_id": {"type": "string"},
+            }
+            return self._json_dumps(schema)
+        if task.task_server_type == "action":
+            schema["x-ros-interface"] = task.msg_interface
+            schema["properties"] = self._ros_message_schema_properties(get_action(task.msg_interface).Goal)
+            return self._json_dumps(schema)
+        if task.task_server_type == "service":
+            schema["x-ros-interface"] = task.msg_interface
+            schema["properties"] = self._ros_message_schema_properties(get_service(task.msg_interface).Request)
+            return self._json_dumps(schema)
+
+        schema["x-error"] = f"Task server type is not implemented yet: {task.task_server_type}"
+        return self._json_dumps(schema)
+
+    def _mission_schema_properties(self) -> dict[str, Any]:
+        return {
+            "mission_id": {"type": "string"},
+            "template_path": {"type": "string"},
+            "template_id": {"type": "string"},
+            "params": {"type": "object"},
+            "subtasks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "subtask_id": {"type": "string"},
+                        "task_id": {"type": "string"},
+                        "task_name": {"type": "string"},
+                        "task_data_json": {},
+                        "allow_skipping": {"type": "boolean"},
+                        "max_attempts": {"type": "integer", "minimum": 1},
+                        "retry_backoff_sec": {"type": "number", "minimum": 0},
+                        "timeout_sec": {"type": "number", "minimum": 0},
+                        "depends_on": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "condition_json": {},
+                    },
+                },
+            },
+        }
+
+    def _ros_message_schema_properties(self, message_type: Any) -> dict[str, Any]:
+        return {
+            field_name: self._ros_field_schema(field_type)
+            for field_name, field_type in message_type.get_fields_and_field_types().items()
+        }
+
+    def _ros_field_schema(self, field_type: str) -> dict[str, Any]:
+        sequence_prefix = "sequence<"
+        if field_type.startswith(sequence_prefix) and field_type.endswith(">"):
+            item_type = field_type[len(sequence_prefix) : -1]
+            return {
+                "type": "array",
+                "items": self._ros_field_schema(item_type),
+                "x-ros-type": field_type,
+            }
+
+        if "[" in field_type and field_type.endswith("]"):
+            item_type = field_type.split("[", 1)[0]
+            return {
+                "type": "array",
+                "items": self._ros_field_schema(item_type),
+                "x-ros-type": field_type,
+            }
+
+        primitive_schema = self._ros_primitive_schema(field_type)
+        if primitive_schema is not None:
+            return primitive_schema
+
+        return {
+            "type": "object",
+            "x-ros-type": field_type,
+        }
+
+    def _ros_primitive_schema(self, field_type: str) -> dict[str, Any] | None:
+        if field_type in {"bool", "boolean"}:
+            return {
+                "type": "boolean",
+                "x-ros-type": field_type,
+            }
+        if field_type in {"float", "double", "float32", "float64"}:
+            return {
+                "type": "number",
+                "x-ros-type": field_type,
+            }
+        if field_type in {
+            "byte",
+            "char",
+            "int8",
+            "uint8",
+            "int16",
+            "uint16",
+            "int32",
+            "uint32",
+            "int64",
+            "uint64",
+        }:
+            return {
+                "type": "integer",
+                "x-ros-type": field_type,
+            }
+        if field_type in {"string", "wstring"}:
+            return {
+                "type": "string",
+                "x-ros-type": field_type,
+            }
+        return None
 
     def _list_task_records(
         self,
@@ -1619,6 +1988,14 @@ class TaskOrchestratorNode(Node):
             and (not request.status or result.status == request.status)
             and (not request.source or result.source == request.source)
             and (not request.correlation_id or result.correlation_id == request.correlation_id)
+            and (not request.robot_id or result.robot_id == request.robot_id)
+            and (not request.fleet_id or result.fleet_id == request.fleet_id)
+            and (not request.site_id or result.site_id == request.site_id)
+            and (not request.zone_id or result.zone_id == request.zone_id)
+            and (not request.operator_id or result.operator_id == request.operator_id)
+            and (not request.tenant_id or result.tenant_id == request.tenant_id)
+            and (not request.trace_id or result.trace_id == request.trace_id)
+            and (not request.idempotency_key or result.idempotency_key == request.idempotency_key)
         )
 
     def _cancel_tasks(
@@ -1845,6 +2222,7 @@ class TaskOrchestratorNode(Node):
         record.active = False
         record.task_data_json = request.task_data_json
         record.tags = list(request.tags)
+        self._copy_request_scheduling(request, record)
         self._copy_public_context(request, record)
         self._set_task_record(task_id, record)
 
@@ -1860,6 +2238,7 @@ class TaskOrchestratorNode(Node):
         if existing_record is not None:
             record.task_data_json = existing_record.task_data_json
             record.tags = list(existing_record.tags)
+            self._copy_record_scheduling(existing_record, record)
             self._copy_public_context(existing_record, record)
         self._set_task_record(result.task_id, record)
 
@@ -1902,6 +2281,7 @@ class TaskOrchestratorNode(Node):
         record.active = True
         record.task_data_json = task_data_json
         record.tags = list(task.tags)
+        self._copy_active_task_scheduling(task, record)
         self._copy_public_context(task, record)
         return record
 
@@ -1911,6 +2291,7 @@ class TaskOrchestratorNode(Node):
         copied_record.active = record.active
         copied_record.task_data_json = record.task_data_json
         copied_record.tags = list(record.tags)
+        self._copy_record_scheduling(record, copied_record)
         self._copy_public_context(record, copied_record)
         self._sync_task_record_metadata(copied_record)
         return copied_record
@@ -1939,6 +2320,23 @@ class TaskOrchestratorNode(Node):
         for field_name in _PUBLIC_CONTEXT_FIELDS:
             if hasattr(source, field_name) and hasattr(target, field_name):
                 setattr(target, field_name, getattr(source, field_name))
+
+    def _copy_request_scheduling(self, source: ExecuteTaskV1.Goal, target: TaskRecordV1) -> None:
+        target.scheduled_at = source.scheduled_at
+        target.delay_sec = source.delay_sec
+        target.deadline_at = source.deadline_at
+        target.timeout_sec = source.timeout_sec
+        target.queue_on_conflict = source.queue_on_conflict
+
+    def _copy_record_scheduling(self, source: TaskRecordV1, target: TaskRecordV1) -> None:
+        target.scheduled_at = source.scheduled_at
+        target.delay_sec = source.delay_sec
+        target.deadline_at = source.deadline_at
+        target.timeout_sec = source.timeout_sec
+        target.queue_on_conflict = source.queue_on_conflict
+
+    def _copy_active_task_scheduling(self, source: ActiveTaskEntry, target: TaskRecordV1) -> None:
+        target.timeout_sec = source.timeout_sec
 
     def _execute_result_to_task_result_msg(self, result: ExecuteTaskV1.Result) -> TaskResultV1:
         msg = TaskResultV1()
@@ -2547,7 +2945,7 @@ class TaskOrchestratorNode(Node):
         result.status = status
         result.error_code = error_code
         result.error_message = error_message
-        result.result_json = result_json
+        result.result_json = result_json_with_error(result_json, error_code, error_message)
         result.created_at = created_at
         result.started_at = started_at
         result.finished_at = finished_at

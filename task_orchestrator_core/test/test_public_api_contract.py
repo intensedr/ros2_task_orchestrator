@@ -5,6 +5,7 @@ from task_orchestrator_core.constants import (
     SERVICE_LIST_TASKS,
     SERVICE_PAUSE_TASKS,
     SERVICE_RESUME_TASKS,
+    SERVICE_VALIDATE_TASK,
     TOPIC_ACTIVE_TASKS,
     TOPIC_EVENTS,
     TOPIC_FEEDBACK,
@@ -24,7 +25,7 @@ from task_orchestrator_msgs.msg import (
     TaskSpecV1,
     TaskStatusV1,
 )
-from task_orchestrator_msgs.srv import ListEventsV1, ListTaskRecordsV1, ListTasksV1
+from task_orchestrator_msgs.srv import ListEventsV1, ListTaskRecordsV1, ListTasksV1, ValidateTaskV1
 
 
 PUBLIC_METADATA_FIELDS = (
@@ -61,6 +62,7 @@ def test_public_ros_names_contract():
     assert SERVICE_CANCEL_TASKS == "/task_orchestrator/cancel_tasks"
     assert SERVICE_PAUSE_TASKS == "/task_orchestrator/pause_tasks"
     assert SERVICE_RESUME_TASKS == "/task_orchestrator/resume_tasks"
+    assert SERVICE_VALIDATE_TASK == "/task_orchestrator/validate_task"
 
 
 def test_public_message_metadata_contract():
@@ -106,6 +108,7 @@ def test_execute_task_action_contract():
 
 def test_status_and_error_constants():
     assert TaskStatusV1.RECEIVED == "RECEIVED"
+    assert TaskStatusV1.PENDING == "PENDING"
     assert TaskStatusV1.ERROR == "ERROR"
     assert ErrorCodeV1.DEADLINE_EXCEEDED == "DEADLINE_EXCEEDED"
     assert ErrorCodeV1.UNSUPPORTED == "UNSUPPORTED"
@@ -136,10 +139,16 @@ def test_list_events_service_contract():
 
     request.event_type = "task.completed"
     request.status = TaskStatusV1.DONE
+    request.robot_id = "robot-1"
+    request.trace_id = "trace-1"
+    request.idempotency_key = "idem-1"
     request.limit = 10
 
     assert request.event_type == "task.completed"
     assert request.status == TaskStatusV1.DONE
+    assert request.robot_id == "robot-1"
+    assert request.trace_id == "trace-1"
+    assert request.idempotency_key == "idem-1"
     assert request.limit == 10
     assert response.events == []
 
@@ -149,8 +158,50 @@ def test_list_task_records_service_contract():
     response = ListTaskRecordsV1.Response()
 
     request.status = TaskStatusV1.DONE
+    request.robot_id = "robot-1"
+    request.trace_id = "trace-1"
+    request.idempotency_key = "idem-1"
     request.limit = 10
 
     assert request.status == TaskStatusV1.DONE
+    assert request.robot_id == "robot-1"
+    assert request.trace_id == "trace-1"
+    assert request.idempotency_key == "idem-1"
     assert request.limit == 10
     assert response.records == []
+
+
+def test_validate_task_service_contract():
+    request = ValidateTaskV1.Request()
+    response = ValidateTaskV1.Response()
+
+    request.task_id = "validation-task"
+    request.task_name = "system/wait"
+    request.task_data_json = '{"duration_sec": 0}'
+    request.include_schema = True
+    response.valid = True
+    response.normalized_task_data_json = '{"duration_sec": 0}'
+    response.schema_json = "{}"
+
+    assert request.task_name == "system/wait"
+    assert request.include_schema is True
+    assert response.valid is True
+    assert response.normalized_task_data_json == '{"duration_sec": 0}'
+
+
+def test_task_record_scheduling_contract():
+    record = TaskRecordV1()
+    record.delay_sec = 1.5
+    record.timeout_sec = 5.0
+    record.queue_on_conflict = True
+
+    fields = TaskRecordV1.get_fields_and_field_types()
+
+    assert "scheduled_at" in fields
+    assert "delay_sec" in fields
+    assert "deadline_at" in fields
+    assert "timeout_sec" in fields
+    assert "queue_on_conflict" in fields
+    assert record.delay_sec == 1.5
+    assert record.timeout_sec == 5.0
+    assert record.queue_on_conflict is True

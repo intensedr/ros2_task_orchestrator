@@ -4,6 +4,14 @@ string event_type
 string status
 string source
 string correlation_id
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
+string idempotency_key
 uint32 limit
 ---
 TaskEventV1[] events

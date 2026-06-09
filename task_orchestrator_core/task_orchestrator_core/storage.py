@@ -8,7 +8,7 @@ from typing import Any
 
 from builtin_interfaces.msg import Time
 
-from task_orchestrator_msgs.msg import TaskEventV1, TaskRecordV1, TaskResultV1
+from task_orchestrator_msgs.msg import TaskEventV1, TaskRecordV1, TaskResultV1, TaskStatusV1
 from task_orchestrator_msgs.srv import ListEventsV1, ListTaskRecordsV1
 
 
@@ -43,6 +43,8 @@ class SQLiteTaskStorage:
         created_sec, created_nanosec = _time_to_pair(result.created_at)
         started_sec, started_nanosec = _time_to_pair(result.started_at)
         finished_sec, finished_nanosec = _time_to_pair(result.finished_at)
+        scheduled_sec, scheduled_nanosec = _time_to_pair(record.scheduled_at)
+        deadline_sec, deadline_nanosec = _time_to_pair(record.deadline_at)
         self._connection.execute(
             """
             INSERT INTO task_records (
@@ -50,11 +52,16 @@ class SQLiteTaskStorage:
                 status, error_code, error_message, result_json,
                 duration_sec, total_duration_sec, idempotency_key, metadata_json,
                 robot_id, fleet_id, site_id, zone_id, operator_id, tenant_id,
-                trace_id, task_data_json, tags_json, active, created_sec, created_nanosec,
+                trace_id, task_data_json, tags_json, scheduled_sec,
+                scheduled_nanosec, delay_sec, deadline_sec, deadline_nanosec,
+                timeout_sec, queue_on_conflict, active, created_sec, created_nanosec,
                 started_sec, started_nanosec, finished_sec, finished_nanosec,
                 updated_at_ns
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             ON CONFLICT(task_id) DO UPDATE SET
                 api_version = excluded.api_version,
                 task_name = excluded.task_name,
@@ -78,6 +85,13 @@ class SQLiteTaskStorage:
                 trace_id = excluded.trace_id,
                 task_data_json = excluded.task_data_json,
                 tags_json = excluded.tags_json,
+                scheduled_sec = excluded.scheduled_sec,
+                scheduled_nanosec = excluded.scheduled_nanosec,
+                delay_sec = excluded.delay_sec,
+                deadline_sec = excluded.deadline_sec,
+                deadline_nanosec = excluded.deadline_nanosec,
+                timeout_sec = excluded.timeout_sec,
+                queue_on_conflict = excluded.queue_on_conflict,
                 active = excluded.active,
                 created_sec = excluded.created_sec,
                 created_nanosec = excluded.created_nanosec,
@@ -111,6 +125,13 @@ class SQLiteTaskStorage:
                 record.trace_id,
                 record.task_data_json,
                 json.dumps(list(record.tags), sort_keys=True),
+                scheduled_sec,
+                scheduled_nanosec,
+                record.delay_sec,
+                deadline_sec,
+                deadline_nanosec,
+                record.timeout_sec,
+                1 if record.queue_on_conflict else 0,
                 1 if record.active else 0,
                 created_sec,
                 created_nanosec,
@@ -143,6 +164,33 @@ class SQLiteTaskStorage:
             values,
         ).fetchall()
         return [self._row_to_task_record(row) for row in rows]
+
+    def list_queued_task_records(self) -> list[TaskRecordV1]:
+        rows = self._connection.execute(
+            """
+            SELECT * FROM task_records
+            WHERE status = ?
+            ORDER BY created_sec ASC, created_nanosec ASC, updated_at_ns ASC
+            """,
+            (TaskStatusV1.QUEUED,),
+        ).fetchall()
+        return [self._row_to_task_record(row) for row in rows]
+
+    def get_task_record_by_idempotency_key(self, idempotency_key: str) -> TaskRecordV1 | None:
+        if not idempotency_key:
+            return None
+        row = self._connection.execute(
+            """
+            SELECT * FROM task_records
+            WHERE idempotency_key = ?
+            ORDER BY updated_at_ns DESC
+            LIMIT 1
+            """,
+            (idempotency_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_task_record(row)
 
     def write_event(self, event: TaskEventV1) -> None:
         stamp_sec, stamp_nanosec = _time_to_pair(event.stamp)
@@ -274,6 +322,13 @@ class SQLiteTaskStorage:
                 trace_id TEXT NOT NULL,
                 task_data_json TEXT NOT NULL,
                 tags_json TEXT NOT NULL,
+                scheduled_sec INTEGER NOT NULL,
+                scheduled_nanosec INTEGER NOT NULL,
+                delay_sec REAL NOT NULL,
+                deadline_sec INTEGER NOT NULL,
+                deadline_nanosec INTEGER NOT NULL,
+                timeout_sec REAL NOT NULL,
+                queue_on_conflict INTEGER NOT NULL,
                 active INTEGER NOT NULL,
                 created_sec INTEGER NOT NULL,
                 created_nanosec INTEGER NOT NULL,
@@ -347,6 +402,16 @@ class SQLiteTaskStorage:
         ):
             default = "'{}'" if column_name == "metadata_json" else "''"
             self._ensure_column("task_records", column_name, f"TEXT NOT NULL DEFAULT {default}")
+        for column_name in (
+            "scheduled_sec",
+            "scheduled_nanosec",
+            "deadline_sec",
+            "deadline_nanosec",
+        ):
+            self._ensure_column("task_records", column_name, "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("task_records", "delay_sec", "REAL NOT NULL DEFAULT 0.0")
+        self._ensure_column("task_records", "timeout_sec", "REAL NOT NULL DEFAULT 0.0")
+        self._ensure_column("task_records", "queue_on_conflict", "INTEGER NOT NULL DEFAULT 0")
         record_columns = self._table_columns("task_records")
         if "task_status" in record_columns:
             self._connection.execute("UPDATE task_records SET status = task_status WHERE status = ''")
@@ -417,6 +482,20 @@ class SQLiteTaskStorage:
         if request.correlation_id:
             filters.append("correlation_id = ?")
             values.append(request.correlation_id)
+        for field_name in (
+            "robot_id",
+            "fleet_id",
+            "site_id",
+            "zone_id",
+            "operator_id",
+            "tenant_id",
+            "trace_id",
+            "idempotency_key",
+        ):
+            value = getattr(request, field_name)
+            if value:
+                filters.append(f"{field_name} = ?")
+                values.append(value)
         return _where_clause(filters), values
 
     def _event_filters(self, request: ListEventsV1.Request) -> tuple[str, list[Any]]:
@@ -440,6 +519,20 @@ class SQLiteTaskStorage:
         if request.correlation_id:
             filters.append("correlation_id = ?")
             values.append(request.correlation_id)
+        for field_name in (
+            "robot_id",
+            "fleet_id",
+            "site_id",
+            "zone_id",
+            "operator_id",
+            "tenant_id",
+            "trace_id",
+            "idempotency_key",
+        ):
+            value = getattr(request, field_name)
+            if value:
+                filters.append(f"{field_name} = ?")
+                values.append(value)
         return _where_clause(filters), values
 
     def _row_to_task_record(self, row: sqlite3.Row) -> TaskRecordV1:
@@ -474,6 +567,11 @@ class SQLiteTaskStorage:
         record.active = bool(row["active"])
         record.task_data_json = row["task_data_json"]
         record.tags = list(json.loads(row["tags_json"]))
+        record.scheduled_at = _pair_to_time(row["scheduled_sec"], row["scheduled_nanosec"])
+        record.delay_sec = row["delay_sec"]
+        record.deadline_at = _pair_to_time(row["deadline_sec"], row["deadline_nanosec"])
+        record.timeout_sec = row["timeout_sec"]
+        record.queue_on_conflict = bool(row["queue_on_conflict"])
         record.idempotency_key = row["idempotency_key"]
         record.metadata_json = row["metadata_json"]
         record.robot_id = row["robot_id"]

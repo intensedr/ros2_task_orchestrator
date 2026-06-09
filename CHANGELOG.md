@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 - 2026-06-09
+
+- Added SQLite restart recovery for persisted `QUEUED` task records.
+- Added scheduling fields to `TaskRecordV1` and SQLite task records so queued
+  task recovery preserves `scheduled_at`, `delay_sec`, `deadline_at`,
+  `timeout_sec` and `queue_on_conflict`.
+- Added SQLite lookup by `idempotency_key` so retry-safe submissions survive
+  node restarts.
+- Added `/task_orchestrator/validate_task` with dry-run payload validation,
+  mission template resolution and best-effort JSON Schema output.
+- Added `robot_id`, `fleet_id`, `site_id`, `zone_id`, `operator_id`,
+  `tenant_id`, `trace_id` and `idempotency_key` filters to task/event history
+  services.
+- Added `PENDING` task status for mission subtask snapshots.
+- Added full terminal mission subtask snapshots, including pending subtasks
+  after failure and canceled subtasks after mission cancellation.
+- Added structured `error` objects to JSON result payloads for failed terminal
+  results while preserving top-level `error_code` and `error_message`.
+
 ## 0.3.0 - 2026-06-07
 
 - Added opt-in queued execution with priority ordering for scheduled or

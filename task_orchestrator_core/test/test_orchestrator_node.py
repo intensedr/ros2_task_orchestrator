@@ -1,6 +1,8 @@
 import json
 import os
+import time
 
+from builtin_interfaces.msg import Time
 import rclpy
 from rclpy.action import CancelResponse
 from rclpy.parameter import Parameter
@@ -13,7 +15,7 @@ from task_orchestrator_core.storage import SQLiteTaskStorage
 from task_orchestrator_core.system_tasks.wait import WaitTaskExecutor
 from task_orchestrator_core.task_models import TaskDefinition
 from task_orchestrator_msgs.action import ExecuteTaskV1
-from task_orchestrator_msgs.msg import ErrorCodeV1, TaskEventV1, TaskStatusV1
+from task_orchestrator_msgs.msg import ErrorCodeV1, TaskEventV1, TaskRecordV1, TaskResultV1, TaskStatusV1
 from task_orchestrator_msgs.srv import (
     CancelTasksV1,
     GetTaskV1,
@@ -22,6 +24,7 @@ from task_orchestrator_msgs.srv import (
     ListTasksV1,
     ReloadConfigV1,
     StopTasksV1,
+    ValidateTaskV1,
 )
 
 
@@ -83,6 +86,32 @@ class RecordingPublisher:
 
 
 TERMINAL_EVENT_TYPES = {"task.completed", "task.failed", "task.rejected", "task.canceled"}
+
+
+def _time(sec):
+    value = Time()
+    value.sec = sec
+    return value
+
+
+def _stored_record(task_id, status, task_data_json='{"duration_sec": 0}'):
+    result = TaskResultV1()
+    result.api_version = "v1beta1"
+    result.task_id = task_id
+    result.task_name = "system/wait"
+    result.source = "test"
+    result.correlation_id = f"{task_id}-corr"
+    result.status = status
+    result.result_json = "{}"
+    result.created_at = _time(1)
+    result.started_at = _time(2)
+    result.finished_at = _time(3)
+
+    record = TaskRecordV1()
+    record.result = result
+    record.task_data_json = task_data_json
+    record.tags = ["stored"]
+    return record
 
 
 def _make_node(tmp_path, parameter_overrides=None):
@@ -293,6 +322,11 @@ def test_event_record_limit_evicts_old_events(tmp_path):
 def test_list_events_filters_and_limits_newest_first(tmp_path):
     node = _make_node(tmp_path)
     try:
+        scheduler_context = ExecuteTaskV1.Goal()
+        scheduler_context.robot_id = "robot-1"
+        scheduler_context.fleet_id = "fleet-1"
+        scheduler_context.trace_id = "trace-1"
+        scheduler_context.idempotency_key = "idem-1"
         node._publish_event(
             event_type="task.started",
             task_id="task-1",
@@ -300,6 +334,7 @@ def test_list_events_filters_and_limits_newest_first(tmp_path):
             source="scheduler",
             correlation_id="corr-1",
             status=TaskStatusV1.IN_PROGRESS,
+            context=scheduler_context,
         )
         node._publish_event(
             event_type="task.completed",
@@ -308,7 +343,13 @@ def test_list_events_filters_and_limits_newest_first(tmp_path):
             source="scheduler",
             correlation_id="corr-1",
             status=TaskStatusV1.DONE,
+            context=scheduler_context,
         )
+        operator_context = ExecuteTaskV1.Goal()
+        operator_context.robot_id = "robot-2"
+        operator_context.fleet_id = "fleet-2"
+        operator_context.trace_id = "trace-2"
+        operator_context.idempotency_key = "idem-2"
         node._publish_event(
             event_type="task.rejected",
             task_id="task-2",
@@ -317,12 +358,17 @@ def test_list_events_filters_and_limits_newest_first(tmp_path):
             correlation_id="corr-2",
             status=TaskStatusV1.REJECTED,
             error_code=ErrorCodeV1.UNKNOWN_TASK,
+            context=operator_context,
         )
 
         list_request = ListEventsV1.Request()
         list_response = ListEventsV1.Response()
         list_request.task_name = "system/wait"
         list_request.source = "scheduler"
+        list_request.robot_id = "robot-1"
+        list_request.fleet_id = "fleet-1"
+        list_request.trace_id = "trace-1"
+        list_request.idempotency_key = "idem-1"
         list_request.limit = 1
 
         list_response = node._list_events(list_request, list_response)
@@ -402,6 +448,99 @@ def test_sqlite_storage_persists_task_records_and_events_when_enabled(tmp_path):
         storage.close()
 
 
+def test_node_recovers_sqlite_queued_task_on_startup(tmp_path):
+    db_path = tmp_path / "task_orchestrator.sqlite3"
+    storage = SQLiteTaskStorage(str(db_path), retention_days=0)
+    try:
+        queued_record = _stored_record("persisted-queued", TaskStatusV1.QUEUED)
+        queued_record.queue_on_conflict = True
+        queued_record.result.idempotency_key = "persisted-queued-key"
+        storage.write_task_record(queued_record)
+    finally:
+        storage.close()
+
+    node = _make_node(
+        tmp_path,
+        parameter_overrides=[
+            Parameter("storage.enabled", value=True),
+            Parameter("storage.sqlite_path", value=str(db_path)),
+            Parameter("storage.retention_days", value=0),
+        ],
+    )
+    try:
+        record = None
+        for _ in range(40):
+            record = node._stored_task_record("persisted-queued")
+            if record is not None and record.result.status == TaskStatusV1.DONE:
+                break
+            time.sleep(0.05)
+
+        events_request = ListEventsV1.Request()
+        events_request.task_id = "persisted-queued"
+        events = node._stored_events(events_request)
+
+        assert record is not None
+        assert record.result.status == TaskStatusV1.DONE
+        assert record.task_data_json == '{"duration_sec": 0}'
+        assert "task.recovered" in [event.event_type for event in events]
+        assert "task.completed" in [event.event_type for event in events]
+    finally:
+        _destroy_node(node)
+
+
+def test_node_uses_sqlite_idempotency_record_after_restart(tmp_path):
+    db_path = tmp_path / "task_orchestrator.sqlite3"
+    storage = SQLiteTaskStorage(str(db_path), retention_days=0)
+    try:
+        done_record = _stored_record("already-done", TaskStatusV1.DONE)
+        done_record.result.idempotency_key = "idem-after-restart"
+        done_record.result.result_json = '{"already": true}'
+        storage.write_task_record(done_record)
+    finally:
+        storage.close()
+
+    node = _make_node(
+        tmp_path,
+        parameter_overrides=[
+            Parameter("storage.enabled", value=True),
+            Parameter("storage.sqlite_path", value=str(db_path)),
+            Parameter("storage.retention_days", value=0),
+        ],
+    )
+    sleeps = []
+    node._wait_task = WaitTaskExecutor(sleep=sleeps.append)
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "duplicate-submit"
+        request.task_name = "system/wait"
+        request.task_data_json = '{"duration_sec": 0}'
+        request.idempotency_key = "idem-after-restart"
+        goal_handle = FakeGoalHandle(request)
+
+        result = node._execute_task_cb(goal_handle)
+
+        assert goal_handle.state == "succeeded"
+        assert result.task_id == "already-done"
+        assert result.result_json == '{"already": true}'
+        assert sleeps == []
+
+        same_id_request = ExecuteTaskV1.Goal()
+        same_id_request.task_id = "already-done"
+        same_id_request.task_name = "system/wait"
+        same_id_request.task_data_json = '{"duration_sec": 0}'
+        same_id_request.idempotency_key = "idem-after-restart"
+        same_id_goal_handle = FakeGoalHandle(same_id_request)
+
+        same_id_result = node._execute_task_cb(same_id_goal_handle)
+
+        assert same_id_goal_handle.state == "succeeded"
+        assert same_id_result.task_id == "already-done"
+        assert same_id_result.result_json == '{"already": true}'
+        assert sleeps == []
+    finally:
+        _destroy_node(node)
+
+
 def test_structured_log_payload_has_consistent_schema(tmp_path):
     node = _make_node(tmp_path)
     try:
@@ -478,12 +617,20 @@ def test_list_task_records_filters_by_status_and_source(tmp_path):
         rejected_request.task_id = "rejected-task"
         rejected_request.task_name = "missing/task"
         rejected_request.source = "operator"
+        rejected_request.robot_id = "robot-2"
+        rejected_request.fleet_id = "fleet-2"
+        rejected_request.trace_id = "trace-2"
+        rejected_request.idempotency_key = "idem-2"
         node._execute_task_cb(FakeGoalHandle(rejected_request))
 
         list_request = ListTaskRecordsV1.Request()
         list_response = ListTaskRecordsV1.Response()
         list_request.status = TaskStatusV1.REJECTED
         list_request.source = "operator"
+        list_request.robot_id = "robot-2"
+        list_request.fleet_id = "fleet-2"
+        list_request.trace_id = "trace-2"
+        list_request.idempotency_key = "idem-2"
 
         list_response = node._list_task_records(list_request, list_response)
 
@@ -592,6 +739,104 @@ tasks:
         _destroy_node(node)
 
 
+def test_validate_task_accepts_system_wait_payload_and_returns_schema(tmp_path):
+    node = _make_node(tmp_path)
+    try:
+        request = ValidateTaskV1.Request()
+        response = ValidateTaskV1.Response()
+        request.task_name = "system/wait"
+        request.task_data_json = '{"duration_sec": 0}'
+        request.include_schema = True
+
+        response = node._validate_task(request, response)
+        schema = json.loads(response.schema_json)
+
+        assert response.valid is True
+        assert response.error_code == ""
+        assert response.normalized_task_data_json == '{"duration_sec": 0}'
+        assert schema["title"] == "system/wait"
+        assert schema["properties"]["duration_sec"]["minimum"] == 0
+    finally:
+        _destroy_node(node)
+
+
+def test_validate_task_rejects_invalid_payload(tmp_path):
+    node = _make_node(tmp_path)
+    try:
+        request = ValidateTaskV1.Request()
+        response = ValidateTaskV1.Response()
+        request.task_name = "system/wait"
+        request.task_data_json = '{"duration_sec": -1}'
+
+        response = node._validate_task(request, response)
+
+        assert response.valid is False
+        assert response.error_code == ErrorCodeV1.TASK_DATA_PARSING_FAILED
+        assert "duration_sec" in response.error_message
+    finally:
+        _destroy_node(node)
+
+
+def test_validate_task_rejects_unknown_task(tmp_path):
+    node = _make_node(tmp_path)
+    try:
+        request = ValidateTaskV1.Request()
+        response = ValidateTaskV1.Response()
+        request.task_name = "missing/task"
+        request.task_data_json = "{}"
+
+        response = node._validate_task(request, response)
+
+        assert response.valid is False
+        assert response.error_code == ErrorCodeV1.UNKNOWN_TASK
+    finally:
+        _destroy_node(node)
+
+
+def test_validate_task_resolves_mission_template(tmp_path):
+    templates_dir = tmp_path / "mission_templates"
+    templates_dir.mkdir()
+    (templates_dir / "wait.yaml").write_text(
+        """
+parameters:
+  mission_id: template-mission
+  duration_sec: 0
+mission_id: "${mission_id}"
+subtasks:
+  - subtask_id: wait-1
+    task_name: system/wait
+    task_data_json:
+      duration_sec: "${duration_sec}"
+""",
+        encoding="utf-8",
+    )
+    node = _make_node(tmp_path)
+    node.set_parameters([Parameter("mission_templates_path", value=str(templates_dir))])
+    try:
+        request = ValidateTaskV1.Request()
+        response = ValidateTaskV1.Response()
+        request.task_id = "mission-validation"
+        request.task_name = "system/mission"
+        request.task_data_json = json.dumps(
+            {
+                "template_id": "wait",
+                "params": {
+                    "mission_id": "mission-from-template",
+                    "duration_sec": 0,
+                },
+            }
+        )
+
+        response = node._validate_task(request, response)
+        normalized = json.loads(response.normalized_task_data_json)
+
+        assert response.valid is True
+        assert normalized["mission_id"] == "mission-from-template"
+        assert normalized["subtasks"][0]["task_name"] == "system/wait"
+    finally:
+        _destroy_node(node)
+
+
 def test_execute_unknown_task_is_rejected(tmp_path):
     node = _make_node(tmp_path)
     events_pub = RecordingPublisher()
@@ -604,12 +849,15 @@ def test_execute_unknown_task_is_rejected(tmp_path):
         goal_handle = FakeGoalHandle(request)
 
         result = node._execute_task_cb(goal_handle)
+        result_payload = json.loads(result.result_json)
         rejected_event_data = json.loads(events_pub.messages[-1].data_json)
         terminal_feedback = json.loads(feedback_pub.messages[-1].feedback_json)
 
         assert goal_handle.state == "aborted"
         assert result.status == TaskStatusV1.REJECTED
         assert result.error_code == ErrorCodeV1.UNKNOWN_TASK
+        assert result_payload["error"]["code"] == ErrorCodeV1.UNKNOWN_TASK
+        assert "Unknown task" in result_payload["error"]["message"]
         assert result.task_id
         assert rejected_event_data["status"] == TaskStatusV1.REJECTED
         assert rejected_event_data["has_error"] is True
@@ -1705,6 +1953,11 @@ def test_execute_mission_fails_on_nonskippable_subtask_failure(tmp_path):
                         "subtask_id": "missing",
                         "task_name": "missing/task",
                         "task_data_json": {},
+                    },
+                    {
+                        "subtask_id": "not-started",
+                        "task_name": "system/wait",
+                        "task_data_json": {"duration_sec": 0},
                     }
                 ],
             }
@@ -1718,7 +1971,12 @@ def test_execute_mission_fails_on_nonskippable_subtask_failure(tmp_path):
         assert result.status == TaskStatusV1.ERROR
         assert result.error_code == ErrorCodeV1.UNKNOWN_TASK
         assert result_payload["status"] == TaskStatusV1.ERROR
+        assert result_payload["error"]["code"] == ErrorCodeV1.UNKNOWN_TASK
         assert result_payload["mission_results"][0]["subtask_id"] == "missing"
+        assert result_payload["mission_results"][0]["status"] == TaskStatusV1.REJECTED
+        assert result_payload["mission_results"][1]["subtask_id"] == "not-started"
+        assert result_payload["mission_results"][1]["status"] == TaskStatusV1.PENDING
+        assert result_payload["mission_results"][1]["attempts"] == 0
         mission_events = [event for event in events_pub.messages if event.event_type.startswith("mission.")]
         assert [event.event_type for event in mission_events] == [
             "mission.started",
@@ -1728,6 +1986,65 @@ def test_execute_mission_fails_on_nonskippable_subtask_failure(tmp_path):
         ]
         failed_data = json.loads(mission_events[-1].data_json)
         assert failed_data["failed_subtask_id"] == "missing"
+        assert failed_data["completed_subtasks"] == 1
+        assert failed_data["total_subtasks"] == 2
+    finally:
+        _destroy_node(node)
+
+
+def test_execute_mission_cancellation_marks_remaining_subtasks_canceled(tmp_path):
+    node = _make_node(tmp_path)
+    events_pub = RecordingPublisher()
+    node._events_pub = events_pub
+    node._action_task_client = FakeActionTaskClient(error=ActionTaskCanceled("action goal was canceled"))
+    node._task_registry.add(
+        TaskDefinition(
+            task_name="example/fibonacci",
+            topic="/example/fibonacci",
+            msg_interface="example_interfaces/action/Fibonacci",
+            task_server_type="action",
+        )
+    )
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "mission-task"
+        request.task_name = "system/mission"
+        request.task_data_json = json.dumps(
+            {
+                "mission_id": "mission-1",
+                "subtasks": [
+                    {
+                        "subtask_id": "action-1",
+                        "task_name": "example/fibonacci",
+                        "task_data_json": {"order": 5},
+                    },
+                    {
+                        "subtask_id": "wait-1",
+                        "task_name": "system/wait",
+                        "task_data_json": {"duration_sec": 0},
+                    },
+                ],
+            }
+        )
+        goal_handle = FakeGoalHandle(request)
+
+        result = node._execute_task_cb(goal_handle)
+        result_payload = json.loads(result.result_json)
+
+        assert goal_handle.state == "aborted"
+        assert result.status == TaskStatusV1.CANCELED
+        assert result_payload["status"] == TaskStatusV1.CANCELED
+        assert result_payload["error"]["message"] == "action goal was canceled"
+        assert [item["status"] for item in result_payload["mission_results"]] == [
+            TaskStatusV1.CANCELED,
+            TaskStatusV1.CANCELED,
+        ]
+        assert result_payload["mission_results"][1]["attempts"] == 0
+        mission_events = [event for event in events_pub.messages if event.event_type.startswith("mission.")]
+        assert mission_events[-1].event_type == "mission.canceled"
+        canceled_data = json.loads(mission_events[-1].data_json)
+        assert canceled_data["completed_subtasks"] == 1
+        assert canceled_data["total_subtasks"] == 2
     finally:
         _destroy_node(node)
 

@@ -17,6 +17,11 @@ TaskResultV1 result
 bool active
 string task_data_json
 string[] tags
+builtin_interfaces/Time scheduled_at
+float64 delay_sec
+builtin_interfaces/Time deadline_at
+float64 timeout_sec
+bool queue_on_conflict
 string idempotency_key
 string metadata_json
 string robot_id

@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from task_orchestrator_core.error_model import maybe_add_error
 from task_orchestrator_msgs.msg import TaskStatusV1
 
 
@@ -80,28 +81,26 @@ class MissionTaskParser:
         error_code: str = "",
         error_message: str = "",
     ) -> str:
-        return json.dumps(
-            {
-                "mission_id": mission_id,
-                "status": status,
-                "error_code": error_code,
-                "error_message": error_message,
-                "mission_results": [
-                    {
-                        "subtask_id": result.subtask_id,
-                        "task_id": result.task_id,
-                        "task_name": result.task_name,
-                        "status": result.status,
-                        "skipped": result.skipped,
-                        "attempts": result.attempts,
-                        "error_code": result.error_code,
-                        "error_message": result.error_message,
-                    }
-                    for result in mission_results
-                ],
-            },
-            sort_keys=True,
-        )
+        payload = {
+            "mission_id": mission_id,
+            "status": status,
+            "error_code": error_code,
+            "error_message": error_message,
+            "mission_results": [
+                {
+                    "subtask_id": result.subtask_id,
+                    "task_id": result.task_id,
+                    "task_name": result.task_name,
+                    "status": result.status,
+                    "skipped": result.skipped,
+                    "attempts": result.attempts,
+                    "error_code": result.error_code,
+                    "error_message": result.error_message,
+                }
+                for result in mission_results
+            ],
+        }
+        return json.dumps(maybe_add_error(payload, error_code, error_message), sort_keys=True)
 
     def _parse_subtask(self, item: Any, mission_id: str, index: int) -> MissionSubtask:
         if not isinstance(item, dict):

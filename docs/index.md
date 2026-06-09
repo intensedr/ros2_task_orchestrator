@@ -34,6 +34,7 @@ feedback, structured events and optional SQLite durability.
 ## Next Reading
 
 - [Getting Started](getting-started.md)
+- [Roadmap](roadmap.md)
 - [Task YAML](configuration/task-yaml.md)
 - [Public API](api/public-api.md)
 - [Observability](concepts/observability.md)

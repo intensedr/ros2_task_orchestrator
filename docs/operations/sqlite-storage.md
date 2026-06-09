@@ -21,6 +21,7 @@ add a runtime package dependency.
 
 - Task records.
 - Task events.
+- Queued task scheduling fields required for restart recovery.
 - Runtime duration and total duration fields.
 - Idempotency keys, tracing IDs and fleet-safe context fields.
 
@@ -32,6 +33,10 @@ When SQLite storage is enabled:
   in-memory cache.
 - `/task_orchestrator/list_task_records` reads from SQLite.
 - `/task_orchestrator/list_events` reads from SQLite.
+- Both list services support task, source, status, fleet-safe context,
+  tracing and idempotency filters.
+- `QUEUED` task records are recovered on node startup and submitted back
+  through the normal execute-task path.
 
 When storage is disabled, these services use bounded in-memory caches.
 

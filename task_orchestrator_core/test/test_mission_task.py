@@ -64,3 +64,21 @@ def test_mission_result_json_is_stable():
         "error_message": "",
         "mission_results": [],
     }
+
+
+def test_mission_result_json_includes_structured_error_when_failed():
+    parser = MissionTaskParser()
+
+    result_json = parser.result_json(
+        mission_id="mission-1",
+        status=TaskStatusV1.ERROR,
+        mission_results=[],
+        error_code="UNKNOWN_TASK",
+        error_message="Unknown task_name: missing/task",
+    )
+
+    assert json.loads(result_json)["error"] == {
+        "code": "UNKNOWN_TASK",
+        "message": "Unknown task_name: missing/task",
+        "details": {},
+    }

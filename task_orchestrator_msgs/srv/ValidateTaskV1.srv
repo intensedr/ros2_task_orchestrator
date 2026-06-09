@@ -1,0 +1,10 @@
+string task_id
+string task_name
+string task_data_json
+bool include_schema
+---
+bool valid
+string error_code
+string error_message
+string normalized_task_data_json
+string schema_json

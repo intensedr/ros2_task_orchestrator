@@ -57,6 +57,7 @@ Execute requests can also carry scheduling fields:
 
 ```text
 string RECEIVED=RECEIVED
+string PENDING=PENDING
 string QUEUED=QUEUED
 string IN_PROGRESS=IN_PROGRESS
 string PAUSING=PAUSING
@@ -85,6 +86,22 @@ Stable error codes:
 - `SERVER_UNAVAILABLE`
 - `UNSUPPORTED`
 - `INTERNAL_ERROR`
+
+Failed terminal results keep `error_code` and `error_message` as top-level
+fields. When `result_json` is a JSON object, it also includes a structured
+error object:
+
+```json
+{
+  "error": {
+    "code": "UNKNOWN_TASK",
+    "message": "Unknown task_name: missing/task",
+    "details": {}
+  },
+  "error_code": "UNKNOWN_TASK",
+  "error_message": "Unknown task_name: missing/task"
+}
+```
 
 ## Execute Task
 
@@ -378,6 +395,50 @@ Topic:
 /task_orchestrator/feedback
 ```
 
+## Task Records
+
+`msg/TaskRecordV1.msg`
+
+Task records embed the terminal or current `TaskResultV1`, the original
+`task_data_json`, caller tags and scheduling fields needed for queued-task
+recovery.
+
+```text
+string api_version
+string task_id
+string task_name
+string source
+int32 priority
+string correlation_id
+builtin_interfaces/Time created_at
+builtin_interfaces/Time started_at
+builtin_interfaces/Time finished_at
+string status
+string error_code
+string error_message
+string result_json
+float64 duration_sec
+float64 total_duration_sec
+TaskResultV1 result
+bool active
+string task_data_json
+string[] tags
+builtin_interfaces/Time scheduled_at
+float64 delay_sec
+builtin_interfaces/Time deadline_at
+float64 timeout_sec
+bool queue_on_conflict
+string idempotency_key
+string metadata_json
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
+```
+
 ## Services
 
 Primary public services:
@@ -441,6 +502,30 @@ string error_code
 string error_message
 ```
 
+`srv/ValidateTaskV1.srv`
+
+```text
+string task_id
+string task_name
+string task_data_json
+bool include_schema
+---
+bool valid
+string error_code
+string error_message
+string normalized_task_data_json
+string schema_json
+```
+
+Semantics:
+
+- Validates task existence and task payload without starting the task.
+- Resolves mission templates before validation.
+- Uses the same JSON-to-ROS2 conversion path as execution for action and
+  service-backed tasks.
+- `schema_json` is a best-effort JSON Schema for the configured payload shape
+  when `include_schema` is true.
+
 Additional V1 query/admin services:
 
 `srv/ReloadConfigV1.srv`
@@ -461,6 +546,14 @@ string event_type
 string status
 string source
 string correlation_id
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
+string idempotency_key
 uint32 limit
 ---
 TaskEventV1[] events
@@ -473,10 +566,22 @@ string task_name
 string status
 string source
 string correlation_id
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
+string idempotency_key
 uint32 limit
 ---
 TaskRecordV1[] records
 ```
+
+Both history services return newest records first and support filtering by
+task identity, lifecycle fields and fleet-safe context fields. These filters
+work against both bounded in-memory history and SQLite-backed history.
 
 ## Configuration Example
 

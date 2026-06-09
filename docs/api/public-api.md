@@ -20,6 +20,7 @@ The public API is defined by `task_orchestrator_msgs`.
 - `/task_orchestrator/cancel_tasks`: `CancelTasksV1`
 - `/task_orchestrator/pause_tasks`: `PauseTasksV1`
 - `/task_orchestrator/resume_tasks`: `ResumeTasksV1`
+- `/task_orchestrator/validate_task`: `ValidateTaskV1`
 
 Additional V1 query/admin endpoints:
 
