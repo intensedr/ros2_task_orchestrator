@@ -47,9 +47,11 @@ existing behavior and are rejected when admission policy blocks them.
 
 `timeout_sec` and `deadline_at` provide execution timeout/deadline handling for
 compatible task backends and built-in wait tasks. Mission subtasks can carry
-`timeout_sec`, `max_attempts` and `retry_backoff_sec`; the current runtime keeps
-mission execution linear while preserving dependency/condition fields for
-future graph execution.
+`depends_on`, `condition`/`condition_json`, `timeout_sec`, `max_attempts`,
+`retry_backoff_sec` and `retry_policy`. The mission executor validates the graph
+and runs deterministic ready waves: dependencies gate later subtasks, independent
+branches are modeled in the same wave, and execution remains stable within the
+single mission callback.
 
 Mission payloads can reference YAML/JSON templates through `template_path` or
 `template_id`. Templates are resolved before the normal mission parser, so

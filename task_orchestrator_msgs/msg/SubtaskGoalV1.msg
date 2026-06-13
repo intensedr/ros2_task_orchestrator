@@ -16,6 +16,9 @@ string task_data_json
 bool allow_skipping
 int32 max_attempts
 float64 retry_backoff_sec
+string retry_backoff_type
+float64 retry_max_backoff_sec
+string[] retry_error_codes
 float64 timeout_sec
 string[] depends_on
 string condition_json

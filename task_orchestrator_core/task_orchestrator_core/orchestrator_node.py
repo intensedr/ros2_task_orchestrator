@@ -925,7 +925,10 @@ class TaskOrchestratorNode(Node):
         request: ExecuteTaskV1.Goal,
     ) -> _TaskExecutionOutcome:
         mission_results: list[MissionSubtaskResult] = []
+        mission_results_by_subtask_id: dict[str, MissionSubtaskResult] = {}
+        remaining_subtask_ids = {subtask.subtask_id for subtask in mission.subtasks}
         total_subtasks = len(mission.subtasks)
+        graph_wave_index = 0
 
         self._publish_mission_lifecycle_event(
             event_type="mission.started",
@@ -937,6 +940,7 @@ class TaskOrchestratorNode(Node):
             priority=request.priority,
             data={
                 "total_subtasks": total_subtasks,
+                "graph_mode": True,
             },
         )
         self._publish_mission_feedback(
@@ -950,101 +954,198 @@ class TaskOrchestratorNode(Node):
             priority=request.priority,
         )
 
-        for index, subtask in enumerate(mission.subtasks, start=1):
-            self._publish_mission_subtask_event(
-                event_type="mission.subtask.started",
-                mission_id=mission.mission_id,
-                mission_task_id=mission_task_id,
-                subtask=subtask,
-                source=request.source,
-                correlation_id=request.correlation_id,
-                status=TaskStatusV1.IN_PROGRESS,
-                priority=request.priority,
-                data={
-                    "subtask_index": index,
-                    "total_subtasks": total_subtasks,
-                    "max_attempts": subtask.max_attempts,
-                    "retry_backoff_sec": subtask.retry_backoff_sec,
-                    "timeout_sec": subtask.timeout_sec,
-                    "allow_skipping": subtask.allow_skipping,
-                },
-            )
-            self._active_mission_subtasks[mission_task_id] = subtask.task_id
-            subtask_result = self._execute_mission_subtask(
-                subtask=subtask,
-                mission_task_id=mission_task_id,
-                request=request,
-            )
-            mission_results.append(subtask_result)
-            self._active_mission_subtasks.pop(mission_task_id, None)
-            self._publish_mission_subtask_result_event(
-                mission_id=mission.mission_id,
-                mission_task_id=mission_task_id,
-                subtask_result=subtask_result,
-                source=request.source,
-                correlation_id=request.correlation_id,
-                subtask_index=index,
-                total_subtasks=total_subtasks,
-                priority=request.priority,
-            )
-
-            self._publish_mission_feedback(
-                mission_id=mission.mission_id,
-                mission_task_id=mission_task_id,
-                active_subtask_id=subtask.subtask_id,
-                completed_subtasks=index,
-                total_subtasks=total_subtasks,
-                source=request.source,
-                correlation_id=request.correlation_id,
-                priority=request.priority,
-            )
-
-            if subtask_result.status == TaskStatusV1.DONE:
-                continue
-            if subtask_result.skipped:
-                continue
-
-            mission_status = mission_status_from_subtask_result_status(subtask_result.status)
-            pending_status = TaskStatusV1.CANCELED if mission_status == TaskStatusV1.CANCELED else TaskStatusV1.PENDING
-            mission_results.extend(
-                self._remaining_mission_subtask_results(
-                    subtasks=mission.subtasks[index:],
-                    status=pending_status,
-                    error_code=subtask_result.error_code,
-                    error_message=subtask_result.error_message,
+        while remaining_subtask_ids:
+            deadline_result = self._deadline_result_if_elapsed(request)
+            if deadline_result is not None:
+                mission_results.extend(
+                    self._remaining_mission_subtask_results_by_id(
+                        subtasks=mission.subtasks,
+                        remaining_subtask_ids=remaining_subtask_ids,
+                        status=TaskStatusV1.PENDING,
+                        error_code=deadline_result.error_code,
+                        error_message=deadline_result.error_message,
+                    )
                 )
-            )
-            terminal_event_type = "mission.canceled" if mission_status == TaskStatusV1.CANCELED else "mission.failed"
-            self._publish_mission_lifecycle_event(
-                event_type=terminal_event_type,
-                mission_id=mission.mission_id,
-                mission_task_id=mission_task_id,
-                source=request.source,
-                correlation_id=request.correlation_id,
-                status=mission_status,
-                previous_status=TaskStatusV1.IN_PROGRESS,
-                error_code=subtask_result.error_code,
-                error_message=subtask_result.error_message,
-                priority=request.priority,
-                data={
-                    "completed_subtasks": index,
-                    "total_subtasks": total_subtasks,
-                    "failed_subtask_id": subtask_result.subtask_id,
-                    "failed_task_id": subtask_result.task_id,
-                },
-            )
-            return _TaskExecutionOutcome(
-                status=mission_status,
-                error_code=subtask_result.error_code,
-                error_message=subtask_result.error_message,
-                result_json=self._mission_task.result_json(
+                self._publish_mission_lifecycle_event(
+                    event_type="mission.timeout",
                     mission_id=mission.mission_id,
+                    mission_task_id=mission_task_id,
+                    source=request.source,
+                    correlation_id=request.correlation_id,
+                    status=TaskStatusV1.ERROR,
+                    previous_status=TaskStatusV1.IN_PROGRESS,
+                    error_code=deadline_result.error_code,
+                    error_message=deadline_result.error_message,
+                    priority=request.priority,
+                    data={
+                        "completed_subtasks": len(mission_results) - len(remaining_subtask_ids),
+                        "total_subtasks": total_subtasks,
+                        "remaining_subtask_ids": sorted(remaining_subtask_ids),
+                    },
+                )
+                return _TaskExecutionOutcome(
+                    status=TaskStatusV1.ERROR,
+                    error_code=deadline_result.error_code,
+                    error_message=deadline_result.error_message,
+                    result_json=self._mission_task.result_json(
+                        mission_id=mission.mission_id,
+                        status=TaskStatusV1.ERROR,
+                        mission_results=mission_results,
+                        error_code=deadline_result.error_code,
+                        error_message=deadline_result.error_message,
+                    ),
+                )
+
+            ready_subtasks = self._ready_mission_subtasks(
+                subtasks=mission.subtasks,
+                remaining_subtask_ids=remaining_subtask_ids,
+                mission_results_by_subtask_id=mission_results_by_subtask_id,
+            )
+            if not ready_subtasks:
+                error_message = "Mission graph has no runnable subtasks."
+                mission_results.extend(
+                    self._remaining_mission_subtask_results_by_id(
+                        subtasks=mission.subtasks,
+                        remaining_subtask_ids=remaining_subtask_ids,
+                        status=TaskStatusV1.PENDING,
+                        error_code=ErrorCodeV1.INTERNAL_ERROR,
+                        error_message=error_message,
+                    )
+                )
+                return _TaskExecutionOutcome(
+                    status=TaskStatusV1.ERROR,
+                    error_code=ErrorCodeV1.INTERNAL_ERROR,
+                    error_message=error_message,
+                    result_json=self._mission_task.result_json(
+                        mission_id=mission.mission_id,
+                        status=TaskStatusV1.ERROR,
+                        mission_results=mission_results,
+                        error_code=ErrorCodeV1.INTERNAL_ERROR,
+                        error_message=error_message,
+                    ),
+                )
+
+            graph_wave_index += 1
+            ready_subtask_ids = [subtask.subtask_id for subtask in ready_subtasks]
+
+            for subtask in ready_subtasks:
+                subtask_index = self._mission_subtask_index(mission.subtasks, subtask.subtask_id)
+                condition_action = self._mission_task.condition_action(subtask)
+                self._publish_mission_subtask_event(
+                    event_type="mission.subtask.started",
+                    mission_id=mission.mission_id,
+                    mission_task_id=mission_task_id,
+                    subtask=subtask,
+                    source=request.source,
+                    correlation_id=request.correlation_id,
+                    status=TaskStatusV1.IN_PROGRESS,
+                    priority=request.priority,
+                    data={
+                        "subtask_index": subtask_index,
+                        "total_subtasks": total_subtasks,
+                        "graph_wave_index": graph_wave_index,
+                        "ready_subtask_ids": ready_subtask_ids,
+                        "depends_on": list(subtask.depends_on),
+                        "condition_action": condition_action,
+                        "max_attempts": subtask.max_attempts,
+                        "retry_backoff_sec": subtask.retry_backoff_sec,
+                        "retry_backoff_type": subtask.retry_backoff_type,
+                        "retry_error_codes": list(subtask.retry_error_codes),
+                        "timeout_sec": subtask.timeout_sec,
+                        "allow_skipping": subtask.allow_skipping,
+                    },
+                )
+                if condition_action in {"skip", "abort"}:
+                    subtask_result = self._condition_mission_subtask_result(subtask, condition_action)
+                else:
+                    self._active_mission_subtasks[mission_task_id] = subtask.task_id
+                    try:
+                        subtask_result = self._execute_mission_subtask(
+                            subtask=subtask,
+                            mission_task_id=mission_task_id,
+                            request=request,
+                        )
+                    finally:
+                        self._active_mission_subtasks.pop(mission_task_id, None)
+
+                mission_results.append(subtask_result)
+                mission_results_by_subtask_id[subtask.subtask_id] = subtask_result
+                remaining_subtask_ids.remove(subtask.subtask_id)
+                self._publish_mission_subtask_result_event(
+                    mission_id=mission.mission_id,
+                    mission_task_id=mission_task_id,
+                    subtask_result=subtask_result,
+                    source=request.source,
+                    correlation_id=request.correlation_id,
+                    subtask_index=subtask_index,
+                    total_subtasks=total_subtasks,
+                    priority=request.priority,
+                )
+
+                self._publish_mission_feedback(
+                    mission_id=mission.mission_id,
+                    mission_task_id=mission_task_id,
+                    active_subtask_id=subtask.subtask_id,
+                    completed_subtasks=len(mission_results),
+                    total_subtasks=total_subtasks,
+                    source=request.source,
+                    correlation_id=request.correlation_id,
+                    priority=request.priority,
+                )
+
+                if subtask_result.status == TaskStatusV1.DONE:
+                    continue
+                if subtask_result.skipped:
+                    continue
+
+                mission_status = mission_status_from_subtask_result_status(subtask_result.status)
+                pending_status = (
+                    TaskStatusV1.CANCELED if mission_status == TaskStatusV1.CANCELED else TaskStatusV1.PENDING
+                )
+                mission_results.extend(
+                    self._remaining_mission_subtask_results_by_id(
+                        subtasks=mission.subtasks,
+                        remaining_subtask_ids=remaining_subtask_ids,
+                        status=pending_status,
+                        error_code=subtask_result.error_code,
+                        error_message=subtask_result.error_message,
+                    )
+                )
+                terminal_event_type = self._mission_terminal_event_type(
+                    mission_status=mission_status,
+                    error_code=subtask_result.error_code,
+                )
+                self._publish_mission_lifecycle_event(
+                    event_type=terminal_event_type,
+                    mission_id=mission.mission_id,
+                    mission_task_id=mission_task_id,
+                    source=request.source,
+                    correlation_id=request.correlation_id,
                     status=mission_status,
-                    mission_results=mission_results,
+                    previous_status=TaskStatusV1.IN_PROGRESS,
                     error_code=subtask_result.error_code,
                     error_message=subtask_result.error_message,
-                ),
-            )
+                    priority=request.priority,
+                    data={
+                        "completed_subtasks": len(mission_results) - len(remaining_subtask_ids),
+                        "total_subtasks": total_subtasks,
+                        "failed_subtask_id": subtask_result.subtask_id,
+                        "failed_task_id": subtask_result.task_id,
+                        "blocked_subtask_ids": sorted(remaining_subtask_ids),
+                    },
+                )
+                return _TaskExecutionOutcome(
+                    status=mission_status,
+                    error_code=subtask_result.error_code,
+                    error_message=subtask_result.error_message,
+                    result_json=self._mission_task.result_json(
+                        mission_id=mission.mission_id,
+                        status=mission_status,
+                        mission_results=mission_results,
+                        error_code=subtask_result.error_code,
+                        error_message=subtask_result.error_message,
+                    ),
+                )
 
         self._publish_mission_lifecycle_event(
             event_type="mission.completed",
@@ -1058,6 +1159,7 @@ class TaskOrchestratorNode(Node):
             data={
                 "completed_subtasks": len(mission_results),
                 "total_subtasks": total_subtasks,
+                "graph_waves": graph_wave_index,
             },
         )
         return _TaskExecutionOutcome(
@@ -1069,6 +1171,66 @@ class TaskOrchestratorNode(Node):
             ),
         )
 
+    def _ready_mission_subtasks(
+        self,
+        subtasks: tuple[MissionSubtask, ...],
+        remaining_subtask_ids: set[str],
+        mission_results_by_subtask_id: dict[str, MissionSubtaskResult],
+    ) -> tuple[MissionSubtask, ...]:
+        return tuple(
+            subtask
+            for subtask in subtasks
+            if subtask.subtask_id in remaining_subtask_ids
+            and all(
+                self._mission_dependency_satisfied(dependency_id, mission_results_by_subtask_id)
+                for dependency_id in subtask.depends_on
+            )
+        )
+
+    def _mission_dependency_satisfied(
+        self,
+        dependency_id: str,
+        mission_results_by_subtask_id: dict[str, MissionSubtaskResult],
+    ) -> bool:
+        dependency_result = mission_results_by_subtask_id.get(dependency_id)
+        if dependency_result is None:
+            return False
+        return dependency_result.status in {TaskStatusV1.DONE, TaskStatusV1.SKIPPED}
+
+    def _condition_mission_subtask_result(self, subtask: MissionSubtask, condition_action: str) -> MissionSubtaskResult:
+        if condition_action == "skip":
+            return MissionSubtaskResult(
+                subtask_id=subtask.subtask_id,
+                task_id=subtask.task_id,
+                task_name=subtask.task_name,
+                status=TaskStatusV1.SKIPPED,
+                skipped=True,
+                attempts=0,
+            )
+        return MissionSubtaskResult(
+            subtask_id=subtask.subtask_id,
+            task_id=subtask.task_id,
+            task_name=subtask.task_name,
+            status=TaskStatusV1.ERROR,
+            skipped=False,
+            attempts=0,
+            error_code=ErrorCodeV1.POLICY_REJECTED,
+            error_message=self._mission_task.condition_error_message(subtask),
+        )
+
+    def _mission_subtask_index(self, subtasks: tuple[MissionSubtask, ...], subtask_id: str) -> int:
+        for index, subtask in enumerate(subtasks, start=1):
+            if subtask.subtask_id == subtask_id:
+                return index
+        return 0
+
+    def _mission_terminal_event_type(self, mission_status: str, error_code: str) -> str:
+        if mission_status == TaskStatusV1.CANCELED:
+            return "mission.canceled"
+        if error_code in {ErrorCodeV1.TASK_TIMEOUT, ErrorCodeV1.DEADLINE_EXCEEDED}:
+            return "mission.timeout"
+        return "mission.failed"
+
     def _execute_mission_subtask(
         self,
         subtask: MissionSubtask,
@@ -1076,8 +1238,10 @@ class TaskOrchestratorNode(Node):
         request: ExecuteTaskV1.Goal,
     ) -> MissionSubtaskResult:
         last_result: ExecuteTaskV1.Result | None = None
+        last_attempt = 0
 
         for attempt in range(1, subtask.max_attempts + 1):
+            last_attempt = attempt
             subtask_request = ExecuteTaskV1.Goal()
             subtask_request.api_version = self.api_version
             subtask_request.task_id = self._subtask_attempt_task_id(subtask, attempt)
@@ -1088,6 +1252,7 @@ class TaskOrchestratorNode(Node):
             subtask_request.task_data_json = subtask.task_data_json
             subtask_request.tags = list(request.tags)
             subtask_request.timeout_sec = subtask.timeout_sec
+            subtask_request.deadline_at = request.deadline_at
             subtask_request.metadata_json = request.metadata_json
             subtask_request.robot_id = request.robot_id
             subtask_request.fleet_id = request.fleet_id
@@ -1113,8 +1278,11 @@ class TaskOrchestratorNode(Node):
                     attempts=attempt,
                 )
 
-            if attempt < subtask.max_attempts and subtask.retry_backoff_sec > 0:
-                self._retry_sleep(subtask.retry_backoff_sec)
+            if not self._should_retry_mission_subtask(subtask, attempt, last_result):
+                break
+            backoff_sec = self._mission_retry_backoff_sec(subtask, attempt)
+            if backoff_sec > 0:
+                self._retry_sleep(backoff_sec)
 
         assert last_result is not None
         if subtask.allow_skipping:
@@ -1124,7 +1292,7 @@ class TaskOrchestratorNode(Node):
                 task_name=subtask.task_name,
                 status=TaskStatusV1.SKIPPED,
                 skipped=True,
-                attempts=subtask.max_attempts,
+                attempts=last_attempt,
                 error_code=last_result.error_code,
                 error_message=last_result.error_message,
             )
@@ -1135,7 +1303,7 @@ class TaskOrchestratorNode(Node):
             task_name=subtask.task_name,
             status=last_result.status,
             skipped=False,
-            attempts=subtask.max_attempts,
+            attempts=last_attempt,
             error_code=last_result.error_code,
             error_message=last_result.error_message,
         )
@@ -1144,6 +1312,29 @@ class TaskOrchestratorNode(Node):
         if attempt == 1:
             return subtask.task_id
         return f"{subtask.task_id}/attempt-{attempt}"
+
+    def _should_retry_mission_subtask(
+        self,
+        subtask: MissionSubtask,
+        attempt: int,
+        result: ExecuteTaskV1.Result,
+    ) -> bool:
+        if attempt >= subtask.max_attempts:
+            return False
+        if result.status == TaskStatusV1.CANCELED:
+            return False
+        if not subtask.retry_error_codes:
+            return True
+        return result.error_code in set(subtask.retry_error_codes)
+
+    def _mission_retry_backoff_sec(self, subtask: MissionSubtask, attempt: int) -> float:
+        if subtask.retry_backoff_type == "exponential":
+            backoff_sec = subtask.retry_backoff_sec * (2 ** max(0, attempt - 1))
+        else:
+            backoff_sec = subtask.retry_backoff_sec
+        if subtask.retry_max_backoff_sec > 0:
+            return min(backoff_sec, subtask.retry_max_backoff_sec)
+        return backoff_sec
 
     def _remaining_mission_subtask_results(
         self,
@@ -1165,6 +1356,21 @@ class TaskOrchestratorNode(Node):
             )
             for subtask in subtasks
         ]
+
+    def _remaining_mission_subtask_results_by_id(
+        self,
+        subtasks: tuple[MissionSubtask, ...],
+        remaining_subtask_ids: set[str],
+        status: str,
+        error_code: str,
+        error_message: str,
+    ) -> list[MissionSubtaskResult]:
+        return self._remaining_mission_subtask_results(
+            subtasks=tuple(subtask for subtask in subtasks if subtask.subtask_id in remaining_subtask_ids),
+            status=status,
+            error_code=error_code,
+            error_message=error_message,
+        )
 
     def _queue_until_admitted(
         self,
@@ -1879,11 +2085,29 @@ class TaskOrchestratorNode(Node):
                         "allow_skipping": {"type": "boolean"},
                         "max_attempts": {"type": "integer", "minimum": 1},
                         "retry_backoff_sec": {"type": "number", "minimum": 0},
+                        "retry_policy": {
+                            "type": "object",
+                            "additionalProperties": True,
+                            "properties": {
+                                "max_attempts": {"type": "integer", "minimum": 1},
+                                "backoff_sec": {"type": "number", "minimum": 0},
+                                "backoff_type": {
+                                    "type": "string",
+                                    "enum": ["fixed", "exponential"],
+                                },
+                                "max_backoff_sec": {"type": "number", "minimum": 0},
+                                "error_codes": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                            },
+                        },
                         "timeout_sec": {"type": "number", "minimum": 0},
                         "depends_on": {
                             "type": "array",
                             "items": {"type": "string"},
                         },
+                        "condition": {},
                         "condition_json": {},
                     },
                 },

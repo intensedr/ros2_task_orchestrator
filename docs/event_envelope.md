@@ -81,6 +81,7 @@ Mission events:
 - `mission.completed`
 - `mission.failed`
 - `mission.canceled`
+- `mission.timeout`
 
 System events:
 
@@ -116,6 +117,10 @@ System events:
   on those fields.
 - Large binary data must not be embedded in events.
 - Sensitive tokens must never be included.
+- Mission subtask start events include graph metadata such as `depends_on`,
+  `condition_action`, `graph_wave_index` and `ready_subtask_ids`.
+- Mission terminal events include final subtask counts, and timeout terminal
+  events use `mission.timeout`.
 
 ## External Client Consumption Pattern
 
@@ -125,6 +130,8 @@ An external fleet agent consumes events through the public API:
   `/active_tasks`.
 - Query `/task_orchestrator/list_events` after reconnects to recover recent
   event history from memory or from SQLite when storage is enabled.
+- For audit replay, request matching events and reverse the newest-first
+  response before rebuilding state transitions.
 - Convert ROS2 messages into the bridge JSON envelope.
 - Add product-specific routing metadata outside the core if needed.
 - Send events to the external backend over WebSocket, Zenoh or MQTT.

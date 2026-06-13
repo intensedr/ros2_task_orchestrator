@@ -60,3 +60,25 @@ through `task.received`, `task.queued`, `task.started` and the terminal event.
 Terminal error results keep stable top-level `error_code` and `error_message`
 fields and include a structured `error` object in `result_json` when the result
 payload is a JSON object.
+
+## Audit Replay
+
+`/task_orchestrator/list_events` returns task and mission events newest first.
+Clients that need audit replay should query by `task_id`, `correlation_id`,
+fleet context or trace fields, reverse the response, then apply events in
+chronological order.
+
+Mission replay uses:
+
+- `mission.started`
+- `mission.subtask.started`
+- `mission.subtask.completed`
+- `mission.subtask.failed`
+- `mission.subtask.skipped`
+- `mission.completed`
+- `mission.failed`
+- `mission.canceled`
+- `mission.timeout`
+
+When SQLite storage is enabled, the same replay pattern works after node
+restart because events are read from durable storage.

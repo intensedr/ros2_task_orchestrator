@@ -5,7 +5,7 @@ client integration and example robot packages.
 
 ## Current Baseline
 
-`0.4.0` is the current recovery-safe production baseline:
+`0.5.0` is the current mission-executor production baseline:
 
 - opt-in queued execution for scheduled or conflict-queued task requests
 - scheduling fields on `ExecuteTaskV1`
@@ -14,7 +14,12 @@ client integration and example robot packages.
 - resource-lock and task-group admission checks
 - dry-run task validation through `ValidateTaskV1`
 - YAML/JSON mission template resolution
+- graph-capable mission execution with deterministic ready waves
+- conditional mission steps for continue, skip, retry and abort
+- mission subtask retry policies with fixed/exponential backoff and selected
+  retry error codes
 - mission subtask retry backoff and timeout propagation
+- explicit mission timeout events for mission/subtask deadline failures
 - history filters for task identity, fleet context, trace and idempotency
 - terminal mission subtask snapshots with pending/canceled states
 - structured task error payloads in `result_json`
@@ -52,11 +57,13 @@ Delivered work:
 Goal: make missions graph-capable while preserving the existing linear mission
 path.
 
-Planned work:
+Status: completed in `0.5.0`.
+
+Delivered work:
 
 - Mission graph executor:
   - `depends_on`
-  - parallel branches
+  - deterministic ready waves for independent branches
   - pending, running, completed, failed and skipped subtask states
 - Conditional steps:
   - continue
@@ -73,7 +80,9 @@ Planned work:
   - subtask-level deadline
   - explicit timeout events
 - Audit replay:
-  - rebuild task and mission state transitions from SQLite events
+  - query task and mission event history through `ListEventsV1`
+  - rebuild state transitions client-side after reversing newest-first event
+    responses
 
 ## 0.6.0: Policy, Admission And Control Hooks
 

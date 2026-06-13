@@ -204,6 +204,54 @@ Semantics:
 - Cancellation through the action server maps to task cancellation when the
   backing task supports cancellation.
 
+### Built-In `system/mission` Payload
+
+`system/mission` is submitted through `ExecuteTaskV1.task_data_json`.
+
+```json
+{
+  "mission_id": "mission-1",
+  "subtasks": [
+    {
+      "subtask_id": "inspect",
+      "task_id": "mission-1/inspect",
+      "task_name": "system/wait",
+      "task_data_json": {"duration_sec": 0},
+      "depends_on": [],
+      "condition": {"action": "continue"},
+      "allow_skipping": false,
+      "max_attempts": 3,
+      "retry_backoff_sec": 1.0,
+      "retry_backoff_type": "exponential",
+      "retry_max_backoff_sec": 10.0,
+      "retry_error_codes": ["TASK_TIMEOUT"],
+      "retry_policy": {
+        "max_attempts": 3,
+        "backoff_sec": 1.0,
+        "backoff_type": "exponential",
+        "max_backoff_sec": 10.0,
+        "error_codes": ["TASK_TIMEOUT"]
+      },
+      "timeout_sec": 5.0
+    }
+  ]
+}
+```
+
+Mission semantics:
+
+- `depends_on` forms a directed acyclic graph; duplicate IDs, unknown
+  dependencies and cycles are rejected before execution.
+- Ready subtasks are grouped into deterministic graph waves and executed in
+  mission payload order inside the mission callback.
+- `condition` and `condition_json` accept `continue`, `skip`, `retry` and
+  `abort`; `condition_json` is the serialized ROS message field.
+- `retry_policy` overrides top-level `max_attempts`, `retry_backoff_sec`,
+  `retry_backoff_type`, `retry_max_backoff_sec` and `retry_error_codes` when
+  provided.
+- Mission `result_json` includes `mission_results` with subtask status,
+  attempts, skipped state and error details.
+
 ## Active Tasks
 
 `msg/ActiveTaskV1.msg`

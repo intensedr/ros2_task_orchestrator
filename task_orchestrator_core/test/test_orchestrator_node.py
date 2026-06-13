@@ -1890,6 +1890,287 @@ def test_execute_linear_mission_succeeds(tmp_path):
         _destroy_node(node)
 
 
+def test_execute_mission_graph_dependencies_use_ready_waves(tmp_path):
+    node = _make_node(tmp_path)
+    events_pub = RecordingPublisher()
+    node._events_pub = events_pub
+    sleeps = []
+    node._wait_task = WaitTaskExecutor(sleep=sleeps.append)
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "mission-task"
+        request.task_name = "system/mission"
+        request.task_data_json = json.dumps(
+            {
+                "mission_id": "mission-graph",
+                "subtasks": [
+                    {
+                        "subtask_id": "wait-2",
+                        "task_name": "system/wait",
+                        "task_data_json": {"duration_sec": 0},
+                        "depends_on": ["wait-1"],
+                    },
+                    {
+                        "subtask_id": "wait-1",
+                        "task_name": "system/wait",
+                        "task_data_json": {"duration_sec": 0},
+                    },
+                    {
+                        "subtask_id": "wait-3",
+                        "task_name": "system/wait",
+                        "task_data_json": {"duration_sec": 0},
+                        "depends_on": ["wait-1"],
+                    },
+                ],
+            }
+        )
+
+        result = node._execute_task_cb(FakeGoalHandle(request))
+        result_payload = json.loads(result.result_json)
+
+        assert result.status == TaskStatusV1.DONE
+        assert [item["subtask_id"] for item in result_payload["mission_results"]] == [
+            "wait-1",
+            "wait-2",
+            "wait-3",
+        ]
+        assert sleeps == [0.0, 0.0, 0.0]
+
+        mission_events = [event for event in events_pub.messages if event.event_type.startswith("mission.")]
+        started_events = [event for event in mission_events if event.event_type == "mission.subtask.started"]
+        started_payloads = [json.loads(event.data_json) for event in started_events]
+        assert [payload["subtask_id"] for payload in started_payloads] == ["wait-1", "wait-2", "wait-3"]
+        assert started_payloads[0]["graph_wave_index"] == 1
+        assert started_payloads[0]["ready_subtask_ids"] == ["wait-1"]
+        assert started_payloads[1]["graph_wave_index"] == 2
+        assert started_payloads[1]["ready_subtask_ids"] == ["wait-2", "wait-3"]
+        assert json.loads(mission_events[-1].data_json)["graph_waves"] == 2
+    finally:
+        _destroy_node(node)
+
+
+def test_execute_mission_condition_skip_satisfies_dependency(tmp_path):
+    node = _make_node(tmp_path)
+    events_pub = RecordingPublisher()
+    node._events_pub = events_pub
+    sleeps = []
+    node._wait_task = WaitTaskExecutor(sleep=sleeps.append)
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "mission-task"
+        request.task_name = "system/mission"
+        request.task_data_json = json.dumps(
+            {
+                "mission_id": "mission-conditions",
+                "subtasks": [
+                    {
+                        "subtask_id": "skip-me",
+                        "task_name": "system/wait",
+                        "task_data_json": {"duration_sec": 10},
+                        "condition": {"action": "skip"},
+                    },
+                    {
+                        "subtask_id": "after-skip",
+                        "task_name": "system/wait",
+                        "task_data_json": {"duration_sec": 0},
+                        "depends_on": ["skip-me"],
+                    },
+                ],
+            }
+        )
+
+        result = node._execute_task_cb(FakeGoalHandle(request))
+        result_payload = json.loads(result.result_json)
+
+        assert result.status == TaskStatusV1.DONE
+        assert [item["status"] for item in result_payload["mission_results"]] == [
+            TaskStatusV1.SKIPPED,
+            TaskStatusV1.DONE,
+        ]
+        assert [item["attempts"] for item in result_payload["mission_results"]] == [0, 1]
+        assert sleeps == [0.0]
+        mission_events = [event for event in events_pub.messages if event.event_type.startswith("mission.")]
+        assert [event.event_type for event in mission_events] == [
+            "mission.started",
+            "mission.subtask.started",
+            "mission.subtask.skipped",
+            "mission.subtask.started",
+            "mission.subtask.completed",
+            "mission.completed",
+        ]
+    finally:
+        _destroy_node(node)
+
+
+def test_execute_mission_condition_abort_fails_and_marks_remaining_pending(tmp_path):
+    node = _make_node(tmp_path)
+    events_pub = RecordingPublisher()
+    node._events_pub = events_pub
+    sleeps = []
+    node._wait_task = WaitTaskExecutor(sleep=sleeps.append)
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "mission-task"
+        request.task_name = "system/mission"
+        request.task_data_json = json.dumps(
+            {
+                "mission_id": "mission-conditions",
+                "subtasks": [
+                    {
+                        "subtask_id": "abort-me",
+                        "task_name": "system/wait",
+                        "condition": {"action": "abort", "reason": "blocked by condition"},
+                    },
+                    {
+                        "subtask_id": "after-abort",
+                        "task_name": "system/wait",
+                        "task_data_json": {"duration_sec": 0},
+                        "depends_on": ["abort-me"],
+                    },
+                ],
+            }
+        )
+        goal_handle = FakeGoalHandle(request)
+
+        result = node._execute_task_cb(goal_handle)
+        result_payload = json.loads(result.result_json)
+
+        assert goal_handle.state == "aborted"
+        assert result.status == TaskStatusV1.ERROR
+        assert result.error_code == ErrorCodeV1.POLICY_REJECTED
+        assert result.error_message == "blocked by condition"
+        assert [item["status"] for item in result_payload["mission_results"]] == [
+            TaskStatusV1.ERROR,
+            TaskStatusV1.PENDING,
+        ]
+        assert [item["attempts"] for item in result_payload["mission_results"]] == [0, 0]
+        assert sleeps == []
+        mission_events = [event for event in events_pub.messages if event.event_type.startswith("mission.")]
+        assert mission_events[-1].event_type == "mission.failed"
+        failed_data = json.loads(mission_events[-1].data_json)
+        assert failed_data["failed_subtask_id"] == "abort-me"
+        assert failed_data["blocked_subtask_ids"] == ["after-abort"]
+    finally:
+        _destroy_node(node)
+
+
+def test_execute_mission_retry_policy_uses_error_codes_and_exponential_backoff(tmp_path):
+    node = _make_node(tmp_path)
+    retry_sleeps = []
+    node._retry_sleep = retry_sleeps.append
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "mission-task"
+        request.task_name = "system/mission"
+        request.task_data_json = json.dumps(
+            {
+                "mission_id": "mission-retry",
+                "subtasks": [
+                    {
+                        "subtask_id": "missing",
+                        "task_name": "missing/task",
+                        "allow_skipping": True,
+                        "retry_policy": {
+                            "max_attempts": 3,
+                            "backoff_sec": 1.0,
+                            "backoff_type": "exponential",
+                            "max_backoff_sec": 1.5,
+                            "error_codes": [ErrorCodeV1.UNKNOWN_TASK],
+                        },
+                    }
+                ],
+            }
+        )
+
+        result = node._execute_task_cb(FakeGoalHandle(request))
+        result_payload = json.loads(result.result_json)
+
+        assert result.status == TaskStatusV1.DONE
+        assert retry_sleeps == [1.0, 1.5]
+        assert result_payload["mission_results"][0]["status"] == TaskStatusV1.SKIPPED
+        assert result_payload["mission_results"][0]["attempts"] == 3
+        assert result_payload["mission_results"][0]["error_code"] == ErrorCodeV1.UNKNOWN_TASK
+    finally:
+        _destroy_node(node)
+
+
+def test_execute_mission_retry_policy_skips_non_matching_error_code(tmp_path):
+    node = _make_node(tmp_path)
+    retry_sleeps = []
+    node._retry_sleep = retry_sleeps.append
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "mission-task"
+        request.task_name = "system/mission"
+        request.task_data_json = json.dumps(
+            {
+                "mission_id": "mission-retry",
+                "subtasks": [
+                    {
+                        "subtask_id": "missing",
+                        "task_name": "missing/task",
+                        "allow_skipping": True,
+                        "retry_policy": {
+                            "max_attempts": 3,
+                            "backoff_sec": 1.0,
+                            "error_codes": [ErrorCodeV1.TASK_TIMEOUT],
+                        },
+                    }
+                ],
+            }
+        )
+
+        result = node._execute_task_cb(FakeGoalHandle(request))
+        result_payload = json.loads(result.result_json)
+
+        assert result.status == TaskStatusV1.DONE
+        assert retry_sleeps == []
+        assert result_payload["mission_results"][0]["attempts"] == 1
+        assert result_payload["mission_results"][0]["error_code"] == ErrorCodeV1.UNKNOWN_TASK
+    finally:
+        _destroy_node(node)
+
+
+def test_execute_mission_timeout_publishes_timeout_event(tmp_path):
+    node = _make_node(tmp_path)
+    events_pub = RecordingPublisher()
+    node._events_pub = events_pub
+    sleeps = []
+    node._wait_task = WaitTaskExecutor(sleep=sleeps.append)
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "mission-task"
+        request.task_name = "system/mission"
+        request.task_data_json = json.dumps(
+            {
+                "mission_id": "mission-timeout",
+                "subtasks": [
+                    {
+                        "subtask_id": "slow-wait",
+                        "task_name": "system/wait",
+                        "task_data_json": {"duration_sec": 2.0},
+                        "timeout_sec": 1.0,
+                    }
+                ],
+            }
+        )
+        goal_handle = FakeGoalHandle(request)
+
+        result = node._execute_task_cb(goal_handle)
+        result_payload = json.loads(result.result_json)
+
+        assert goal_handle.state == "aborted"
+        assert result.status == TaskStatusV1.ERROR
+        assert result.error_code == ErrorCodeV1.TASK_TIMEOUT
+        assert result_payload["mission_results"][0]["error_code"] == ErrorCodeV1.TASK_TIMEOUT
+        assert sleeps == []
+        mission_events = [event for event in events_pub.messages if event.event_type.startswith("mission.")]
+        assert mission_events[-1].event_type == "mission.timeout"
+        assert json.loads(mission_events[-1].data_json)["failed_subtask_id"] == "slow-wait"
+    finally:
+        _destroy_node(node)
+
+
 def test_execute_mission_from_yaml_template(tmp_path):
     templates_dir = tmp_path / "mission_templates"
     templates_dir.mkdir()

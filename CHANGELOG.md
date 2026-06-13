@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.0 - 2026-06-13
+
+- Added graph-capable `system/mission` execution with validated `depends_on`
+  dependencies, duplicate-ID checks, unknown-dependency checks and cycle
+  detection.
+- Added deterministic mission ready waves so independent branches can be modeled
+  while existing linear mission payloads keep stable execution order.
+- Added conditional mission subtask actions: `continue`, `skip`, `retry` and
+  `abort`.
+- Added structured mission `retry_policy` with max attempts, fixed/exponential
+  backoff, max backoff and retry-by-error-code filtering.
+- Added `retry_backoff_type`, `retry_max_backoff_sec` and `retry_error_codes` to
+  `SubtaskGoalV1`.
+- Added `mission.timeout` terminal events for mission-level deadlines and
+  subtask timeout/deadline failures.
+- Documented mission audit replay through `/task_orchestrator/list_events` and
+  SQLite-backed event history.
+- Bumped `task_orchestrator_core` and `task_orchestrator_msgs` to `0.5.0`.
+
 ## 0.4.0 - 2026-06-09
 
 - Added SQLite restart recovery for persisted `QUEUED` task records.
