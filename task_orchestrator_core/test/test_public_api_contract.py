@@ -126,10 +126,23 @@ def test_event_message_contract():
 def test_list_tasks_service_contract():
     request = ListTasksV1.Request()
     response = ListTasksV1.Response()
+    task = TaskSpecV1()
 
     request.include_system_tasks = True
+    task.zone_locked = True
+    task.min_battery_percent = 30.0
+    task.allowed_robot_modes = ["AUTO"]
+    task.requires_localization = True
+    task.supports_pause = True
+    task.supports_resume = True
 
     assert request.include_system_tasks is True
+    assert task.zone_locked is True
+    assert task.min_battery_percent == 30.0
+    assert task.allowed_robot_modes == ["AUTO"]
+    assert task.requires_localization is True
+    assert task.supports_pause is True
+    assert task.supports_resume is True
     assert response.tasks == []
 
 

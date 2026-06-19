@@ -13,7 +13,7 @@ from task_orchestrator_core.clients.service_task import ServiceTaskResult, Servi
 from task_orchestrator_core.orchestrator_node import TaskOrchestratorNode
 from task_orchestrator_core.storage import SQLiteTaskStorage
 from task_orchestrator_core.system_tasks.wait import WaitTaskExecutor
-from task_orchestrator_core.task_models import TaskDefinition
+from task_orchestrator_core.task_models import TaskControlHook, TaskDefinition
 from task_orchestrator_msgs.action import ExecuteTaskV1
 from task_orchestrator_msgs.msg import ErrorCodeV1, TaskEventV1, TaskRecordV1, TaskResultV1, TaskStatusV1
 from task_orchestrator_msgs.srv import (
@@ -22,7 +22,9 @@ from task_orchestrator_msgs.srv import (
     ListEventsV1,
     ListTaskRecordsV1,
     ListTasksV1,
+    PauseTasksV1,
     ReloadConfigV1,
+    ResumeTasksV1,
     StopTasksV1,
     ValidateTaskV1,
 )
@@ -315,6 +317,41 @@ def test_event_record_limit_evicts_old_events(tmp_path):
 
         assert [event.event_type for event in list_response.events] == ["task.event-2", "task.event-1"]
         assert [event.event_type for event in node._event_records.values()] == ["task.event-1", "task.event-2"]
+    finally:
+        _destroy_node(node)
+
+
+def test_event_hooks_receive_events_without_breaking_publication(tmp_path):
+    class RecordingHook:
+        def __init__(self):
+            self.events = []
+
+        def handle_event(self, event, data):
+            self.events.append((event.event_type, data))
+
+    class FailingHook:
+        def handle_event(self, event, data):
+            raise RuntimeError("hook failed")
+
+    node = _make_node(tmp_path)
+    events_pub = RecordingPublisher()
+    node._events_pub = events_pub
+    hook = RecordingHook()
+    node.add_event_hook(hook)
+    node.add_event_hook(FailingHook())
+    try:
+        node._publish_event(
+            event_type="task.started",
+            task_id="task-1",
+            task_name="system/wait",
+            source="test",
+            correlation_id="corr-1",
+            status=TaskStatusV1.IN_PROGRESS,
+            data={"example": True},
+        )
+
+        assert [event.event_type for event in events_pub.messages] == ["task.started"]
+        assert hook.events == [("task.started", {"example": True})]
     finally:
         _destroy_node(node)
 
@@ -1413,6 +1450,114 @@ def test_cancel_tasks_reports_noncancelable_task(tmp_path):
         _destroy_node(node)
 
 
+def test_pause_and_resume_tasks_use_active_control_callbacks(tmp_path):
+    node = _make_node(tmp_path)
+    events_pub = RecordingPublisher()
+    node._events_pub = events_pub
+    calls = []
+    try:
+        node._active_tasks.add(
+            ActiveTaskEntry(
+                api_version="v1beta1",
+                task_id="task-1",
+                task_name="example/pauseable",
+                source="test",
+                correlation_id="corr-1",
+                priority=0,
+                status=TaskStatusV1.IN_PROGRESS,
+                created_at=node.get_clock().now().to_msg(),
+                started_at=node.get_clock().now().to_msg(),
+                tags=(),
+                task_server_type="action",
+                pause_callback=lambda: not calls.append("pause"),
+                resume_callback=lambda: not calls.append("resume"),
+            )
+        )
+        pause_request = PauseTasksV1.Request()
+        pause_response = PauseTasksV1.Response()
+        pause_request.task_ids = ["task-1"]
+        resume_request = ResumeTasksV1.Request()
+        resume_response = ResumeTasksV1.Response()
+        resume_request.task_ids = ["task-1"]
+
+        pause_response = node._pause_tasks(pause_request, pause_response)
+        resume_response = node._resume_tasks(resume_request, resume_response)
+
+        assert pause_response.success is True
+        assert pause_response.paused_task_ids == ["task-1"]
+        assert resume_response.success is True
+        assert resume_response.resumed_task_ids == ["task-1"]
+        assert calls == ["pause", "resume"]
+        assert node._active_tasks.get("task-1").status == TaskStatusV1.IN_PROGRESS
+        assert [event.event_type for event in events_pub.messages] == [
+            "system.pause.requested",
+            "task.paused",
+            "system.pause.completed",
+            "system.resume.requested",
+            "task.resumed",
+            "system.resume.completed",
+        ]
+    finally:
+        _destroy_node(node)
+
+
+def test_pause_tasks_reports_unsupported_without_hook(tmp_path):
+    node = _make_node(tmp_path)
+    try:
+        node._active_tasks.add(
+            ActiveTaskEntry(
+                api_version="v1beta1",
+                task_id="task-1",
+                task_name="example/not-pauseable",
+                source="test",
+                correlation_id="corr-1",
+                priority=0,
+                status=TaskStatusV1.IN_PROGRESS,
+                created_at=node.get_clock().now().to_msg(),
+                started_at=node.get_clock().now().to_msg(),
+                tags=(),
+                task_server_type="service",
+            )
+        )
+        request = PauseTasksV1.Request()
+        response = PauseTasksV1.Response()
+        request.task_ids = ["task-1"]
+
+        response = node._pause_tasks(request, response)
+
+        assert response.success is False
+        assert response.paused_task_ids == []
+        assert response.failed_task_ids == ["task-1"]
+        assert response.error_code == ErrorCodeV1.UNSUPPORTED
+    finally:
+        _destroy_node(node)
+
+
+def test_configured_service_control_hook_executes_through_service_client(tmp_path):
+    node = _make_node(tmp_path)
+    node._service_task_client = FakeServiceTaskClient()
+    task = TaskDefinition(
+        task_name="example/pauseable",
+        pause_hook=TaskControlHook(
+            task_server_type="service",
+            topic="/example/pause",
+            msg_interface="std_srvs/srv/Trigger",
+            task_data_json="{}",
+            timeout_sec=2.0,
+        ),
+    )
+    try:
+        callback = node._make_task_control_callback(task, "task-1", "pause", task.pause_hook)
+
+        assert callback is not None
+        assert callback() is True
+        assert node._service_task_client.task.task_name == "example/pauseable/pause"
+        assert node._service_task_client.task.topic == "/example/pause"
+        assert node._service_task_client.task.cancel_timeout == 2.0
+    finally:
+        _destroy_node(node)
+
+
 def test_stop_tasks_uses_cancel_on_stop(tmp_path):
     node = _make_node(tmp_path)
     events_pub = RecordingPublisher()
@@ -1699,6 +1844,73 @@ def test_resource_lock_rejects_conflicting_task(tmp_path):
         assert result.status == TaskStatusV1.REJECTED
         assert result.error_code == ErrorCodeV1.RESOURCE_CONFLICT
         assert "resources: base" in result.error_message
+    finally:
+        _destroy_node(node)
+
+
+def test_zone_lock_rejects_conflicting_zone(tmp_path):
+    node = _make_node(tmp_path)
+    node._task_registry.add(
+        TaskDefinition(
+            task_name="example/zone-task",
+            task_server_type="system/wait",
+            zone_locked=True,
+        )
+    )
+    try:
+        node._active_tasks.add(
+            ActiveTaskEntry(
+                api_version="v1beta1",
+                task_id="active-zone-task",
+                task_name="example/active-zone-task",
+                source="test",
+                correlation_id="corr-1",
+                priority=0,
+                status=TaskStatusV1.IN_PROGRESS,
+                created_at=node.get_clock().now().to_msg(),
+                started_at=node.get_clock().now().to_msg(),
+                tags=(),
+                task_server_type="action",
+                zone_id="zone-1",
+                zone_locked=True,
+            )
+        )
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "zone-conflict"
+        request.task_name = "example/zone-task"
+        request.task_data_json = '{"duration_sec": 0}'
+        request.zone_id = "zone-1"
+
+        result = node._execute_task_cb(FakeGoalHandle(request))
+
+        assert result.status == TaskStatusV1.REJECTED
+        assert result.error_code == ErrorCodeV1.RESOURCE_CONFLICT
+        assert "zone-1" in result.error_message
+    finally:
+        _destroy_node(node)
+
+
+def test_admission_provider_parameters_reject_task(tmp_path):
+    node = _make_node(tmp_path)
+    node._task_registry.add(
+        TaskDefinition(
+            task_name="example/needs-battery",
+            task_server_type="system/wait",
+            min_battery_percent=50.0,
+        )
+    )
+    node.set_parameters([Parameter("admission.battery_percent", value=20.0)])
+    try:
+        request = ExecuteTaskV1.Goal()
+        request.task_id = "battery-rejected"
+        request.task_name = "example/needs-battery"
+        request.task_data_json = '{"duration_sec": 0}'
+
+        result = node._execute_task_cb(FakeGoalHandle(request))
+
+        assert result.status == TaskStatusV1.REJECTED
+        assert result.error_code == ErrorCodeV1.POLICY_REJECTED
+        assert "Battery level" in result.error_message
     finally:
         _destroy_node(node)
 

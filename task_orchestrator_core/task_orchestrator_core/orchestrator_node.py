@@ -52,7 +52,9 @@ from task_orchestrator_core.constants import (
     TOPIC_FEEDBACK,
     TOPIC_RESULTS,
 )
+from task_orchestrator_core.event_hooks import TaskEventHook
 from task_orchestrator_core.error_model import result_json_with_error
+from task_orchestrator_core.policy import AdmissionSnapshot, PolicyDecision, TaskPolicyEngine
 from task_orchestrator_core.registry import TaskRegistry
 from task_orchestrator_core.storage import SQLiteTaskStorage
 from task_orchestrator_core.system_tasks.control import (
@@ -70,7 +72,7 @@ from task_orchestrator_core.system_tasks.mission import (
     mission_status_from_subtask_result_status,
 )
 from task_orchestrator_core.system_tasks.wait import WaitTaskExecutor, WaitTaskValidationError
-from task_orchestrator_core.task_models import TaskConfigError, TaskDefinition
+from task_orchestrator_core.task_models import TaskConfigError, TaskControlHook, TaskDefinition
 from task_orchestrator_msgs.action import ExecuteTaskV1
 from task_orchestrator_msgs.msg import (
     ActiveTaskArrayV1,
@@ -155,6 +157,11 @@ class TaskOrchestratorNode(Node):
         self.declare_parameter("mission_templates_path", "")
         self.declare_parameter("queue.max_size", 100)
         self.declare_parameter("queue.poll_interval_sec", 0.05)
+        self.declare_parameter("admission.battery_percent", 100.0)
+        self.declare_parameter("admission.robot_mode", "")
+        self.declare_parameter("admission.localization_ok", True)
+        self.declare_parameter("admission.emergency_stop_active", False)
+        self.declare_parameter("admission.available_capability_tags", [])
         self.declare_parameter("storage.enabled", False)
         self.declare_parameter("storage.sqlite_path", "")
         self.declare_parameter("storage.retention_days", 30)
@@ -176,6 +183,8 @@ class TaskOrchestratorNode(Node):
         self._storage = self._make_storage()
         self._control_task = ControlTaskParser()
         self._mission_task = MissionTaskParser()
+        self._policy_engine = TaskPolicyEngine()
+        self._event_hooks: list[TaskEventHook] = []
         self._wait_task = WaitTaskExecutor()
         self._retry_sleep = wall_time.sleep
         self._action_task_client = ActionTaskClient(self, callback_group=self._callback_group)
@@ -247,13 +256,13 @@ class TaskOrchestratorNode(Node):
         self._pause_tasks_service = self.create_service(
             PauseTasksV1,
             SERVICE_PAUSE_TASKS,
-            self._unsupported_task_control,
+            self._pause_tasks,
             callback_group=self._callback_group,
         )
         self._resume_tasks_service = self.create_service(
             ResumeTasksV1,
             SERVICE_RESUME_TASKS,
-            self._unsupported_task_control,
+            self._resume_tasks,
             callback_group=self._callback_group,
         )
         self._stop_tasks_service = self.create_service(
@@ -291,6 +300,15 @@ class TaskOrchestratorNode(Node):
     def _execute_task_cb(self, goal_handle: Any) -> ExecuteTaskV1.Result:
         """Execute a configured task."""
         return self._execute_task(goal_handle)
+
+    def add_event_hook(self, hook: TaskEventHook) -> None:
+        """Register an internal event hook."""
+        self._event_hooks.append(hook)
+
+    def remove_event_hook(self, hook: TaskEventHook) -> None:
+        """Remove an internal event hook if it is registered."""
+        if hook in self._event_hooks:
+            self._event_hooks.remove(hook)
 
     def _cancel_execute_task_goal(self, goal_handle: Any) -> CancelResponse:
         task_id = goal_handle.request.task_id
@@ -403,14 +421,18 @@ class TaskOrchestratorNode(Node):
             self._publish_terminal_result_and_event(queue_result, self._terminal_event_type(queue_result.status))
             return queue_result
 
-        policy_error = self._apply_start_policy(task, ignored_active_task_ids=ignored_active_task_ids)
-        if policy_error:
+        policy_decision = self._start_policy_decision(
+            task,
+            request=request,
+            ignored_active_task_ids=ignored_active_task_ids,
+        )
+        if not policy_decision.allowed:
             result = self._make_result(
                 request=request,
                 task_id=task_id,
                 status=TaskStatusV1.REJECTED,
-                error_code=ErrorCodeV1.RESOURCE_CONFLICT,
-                error_message=policy_error,
+                error_code=policy_decision.error_code,
+                error_message=policy_decision.error_message,
                 created_at=created_at,
                 started_at=created_at,
                 finished_at=created_at,
@@ -490,6 +512,7 @@ class TaskOrchestratorNode(Node):
                 resources=task.resources,
                 task_group=task.task_group,
                 capability_tags=task.capability_tags,
+                zone_locked=task.zone_locked,
                 robot_id=request.robot_id,
                 fleet_id=request.fleet_id,
                 site_id=request.site_id,
@@ -501,6 +524,8 @@ class TaskOrchestratorNode(Node):
                 idempotency_key=request.idempotency_key,
                 timeout_sec=self._effective_timeout_sec(request),
                 cancel_callback=self._make_cancel_callback(self._task_with_request_timeout(task, request), task_id),
+                pause_callback=self._make_task_control_callback(task, task_id, "pause", task.pause_hook),
+                resume_callback=self._make_task_control_callback(task, task_id, "resume", task.resume_hook),
             )
             self._active_tasks.add(active_task)
             self._store_active_task_record(active_task, request.task_data_json)
@@ -1441,8 +1466,16 @@ class TaskOrchestratorNode(Node):
                     return deadline_result
 
                 now_ns = self._now_ns()
-                policy_error = self._apply_start_policy(task, ignored_active_task_ids=ignored_active_task_ids)
-                if now_ns >= entry.ready_at_ns and not policy_error and self._is_queue_head_locked(entry, now_ns):
+                policy_decision = self._start_policy_decision(
+                    task,
+                    request=request,
+                    ignored_active_task_ids=ignored_active_task_ids,
+                )
+                if (
+                    now_ns >= entry.ready_at_ns
+                    and policy_decision.allowed
+                    and self._is_queue_head_locked(entry, now_ns)
+                ):
                     self._queued_tasks.pop(entry.task_id, None)
                     self._notify_queue_locked()
                     self._publish_dequeued_task_event(request, entry)
@@ -1718,13 +1751,14 @@ class TaskOrchestratorNode(Node):
         self._copy_public_context(source, result)
         return result
 
-    def _apply_start_policy(
+    def _start_policy_decision(
         self,
         task: TaskDefinition,
+        request: ExecuteTaskV1.Goal,
         ignored_active_task_ids: set[str] | None = None,
-    ) -> str:
+    ) -> PolicyDecision:
         if task.task_server_type in _CONTROL_TASK_SERVER_TYPES:
-            return ""
+            return PolicyDecision()
 
         ignored_active_ids = set(ignored_active_task_ids or set())
 
@@ -1733,41 +1767,29 @@ class TaskOrchestratorNode(Node):
                 if active_task.task_name != task.task_name:
                     continue
                 if not self._cancel_active_task(active_task):
-                    return f"Task {task.task_name} is already active and cannot be replaced."
+                    return PolicyDecision(
+                        allowed=False,
+                        error_code=ErrorCodeV1.RESOURCE_CONFLICT,
+                        error_message=f"Task {task.task_name} is already active and cannot be replaced.",
+                    )
                 ignored_active_ids.add(active_task.task_id)
 
-        blocking_tasks = [
-            active_task
-            for active_task in self._active_tasks.list()
-            if active_task.blocking and active_task.task_id not in ignored_active_ids
-        ]
-        if blocking_tasks:
-            blocking_task_ids = ", ".join(task.task_id for task in blocking_tasks)
-            return f"Active blocking task prevents starting {task.task_name}: {blocking_task_ids}"
+        return self._policy_engine.evaluate_start(
+            task=task,
+            active_tasks=self._active_tasks.list(),
+            admission=self._admission_snapshot(),
+            request_zone_id=request.zone_id,
+            ignored_active_task_ids=ignored_active_ids,
+        )
 
-        requested_resources = set(task.resources)
-        if requested_resources:
-            for active_task in self._active_tasks.list():
-                if active_task.task_id in ignored_active_ids:
-                    continue
-                shared_resources = requested_resources.intersection(active_task.resources)
-                if shared_resources:
-                    return (
-                        f"Task {task.task_name} conflicts with active task {active_task.task_id} "
-                        f"on resources: {', '.join(sorted(shared_resources))}"
-                    )
-
-        if task.task_group:
-            for active_task in self._active_tasks.list():
-                if active_task.task_id in ignored_active_ids:
-                    continue
-                if active_task.task_group == task.task_group:
-                    return (
-                        f"Task {task.task_name} conflicts with active task {active_task.task_id} "
-                        f"in task group: {task.task_group}"
-                    )
-
-        return ""
+    def _admission_snapshot(self) -> AdmissionSnapshot:
+        return AdmissionSnapshot(
+            battery_percent=float(self.get_parameter("admission.battery_percent").value),
+            robot_mode=str(self.get_parameter("admission.robot_mode").value),
+            localization_ok=bool(self.get_parameter("admission.localization_ok").value),
+            emergency_stop_active=bool(self.get_parameter("admission.emergency_stop_active").value),
+            available_capability_tags=tuple(self.get_parameter("admission.available_capability_tags").value or []),
+        )
 
     def _list_tasks(self, _request: ListTasksV1.Request, response: ListTasksV1.Response) -> ListTasksV1.Response:
         response.tasks = [
@@ -2330,6 +2352,153 @@ class TaskOrchestratorNode(Node):
         response.error_message = "" if response.success else "Some tasks could not be stopped."
         return response
 
+    def _pause_tasks(
+        self,
+        request: PauseTasksV1.Request,
+        response: PauseTasksV1.Response,
+    ) -> PauseTasksV1.Response:
+        self._publish_system_control_event(
+            event_type="system.pause.requested",
+            task_id="",
+            task_name="system/pause",
+            source=request.source,
+            correlation_id=request.correlation_id,
+            data=self._task_control_request_observability_data(request),
+        )
+        response = self._pause_matching_tasks(request, response)
+        self._publish_system_control_event(
+            event_type="system.pause.completed",
+            task_id="",
+            task_name="system/pause",
+            source=request.source,
+            correlation_id=request.correlation_id,
+            success=response.success,
+            error_code=response.error_code,
+            error_message=response.error_message,
+            data={
+                **self._task_control_request_observability_data(request),
+                "paused_task_ids": list(response.paused_task_ids),
+                "failed_task_ids": list(response.failed_task_ids),
+            },
+        )
+        return response
+
+    def _pause_matching_tasks(
+        self,
+        request: PauseTasksV1.Request,
+        response: PauseTasksV1.Response,
+    ) -> PauseTasksV1.Response:
+        paused_task_ids: list[str] = []
+        failed_task_ids: list[str] = []
+        unsupported = False
+
+        selected_tasks = self._active_tasks.matching(
+            task_ids=list(request.task_ids),
+            source=request.source,
+            correlation_id=request.correlation_id,
+        )
+        selected_ids = {task.task_id for task in selected_tasks}
+        failed_task_ids.extend(sorted(set(request.task_ids) - selected_ids))
+
+        for task in selected_tasks:
+            if task.pause_callback is None:
+                failed_task_ids.append(task.task_id)
+                unsupported = True
+                continue
+            if not self._invoke_active_task_control(task, "pause"):
+                failed_task_ids.append(task.task_id)
+                continue
+            updated_task = self._set_active_task_status(task.task_id, TaskStatusV1.PAUSED) or task
+            paused_task_ids.append(task.task_id)
+            self._publish_task_control_state_event(
+                event_type="task.paused",
+                task=updated_task,
+                previous_status=task.status,
+            )
+
+        response.paused_task_ids = paused_task_ids
+        response.failed_task_ids = sorted(failed_task_ids)
+        response.success = not response.failed_task_ids
+        response.error_code = self._task_control_error_code(response.success, unsupported)
+        response.error_message = "" if response.success else "Some tasks could not be paused."
+        return response
+
+    def _resume_tasks(
+        self,
+        request: ResumeTasksV1.Request,
+        response: ResumeTasksV1.Response,
+    ) -> ResumeTasksV1.Response:
+        self._publish_system_control_event(
+            event_type="system.resume.requested",
+            task_id="",
+            task_name="system/resume",
+            source=request.source,
+            correlation_id=request.correlation_id,
+            data=self._task_control_request_observability_data(request),
+        )
+        response = self._resume_matching_tasks(request, response)
+        self._publish_system_control_event(
+            event_type="system.resume.completed",
+            task_id="",
+            task_name="system/resume",
+            source=request.source,
+            correlation_id=request.correlation_id,
+            success=response.success,
+            error_code=response.error_code,
+            error_message=response.error_message,
+            data={
+                **self._task_control_request_observability_data(request),
+                "resumed_task_ids": list(response.resumed_task_ids),
+                "failed_task_ids": list(response.failed_task_ids),
+            },
+        )
+        return response
+
+    def _resume_matching_tasks(
+        self,
+        request: ResumeTasksV1.Request,
+        response: ResumeTasksV1.Response,
+    ) -> ResumeTasksV1.Response:
+        resumed_task_ids: list[str] = []
+        failed_task_ids: list[str] = []
+        unsupported = False
+
+        selected_tasks = self._active_tasks.matching(
+            task_ids=list(request.task_ids),
+            source=request.source,
+            correlation_id=request.correlation_id,
+        )
+        selected_ids = {task.task_id for task in selected_tasks}
+        failed_task_ids.extend(sorted(set(request.task_ids) - selected_ids))
+
+        for task in selected_tasks:
+            if task.resume_callback is None:
+                failed_task_ids.append(task.task_id)
+                unsupported = True
+                continue
+            if not self._invoke_active_task_control(task, "resume"):
+                failed_task_ids.append(task.task_id)
+                continue
+            updated_task = self._set_active_task_status(task.task_id, TaskStatusV1.IN_PROGRESS) or task
+            resumed_task_ids.append(task.task_id)
+            self._publish_task_control_state_event(
+                event_type="task.resumed",
+                task=updated_task,
+                previous_status=task.status,
+            )
+
+        response.resumed_task_ids = resumed_task_ids
+        response.failed_task_ids = sorted(failed_task_ids)
+        response.success = not response.failed_task_ids
+        response.error_code = self._task_control_error_code(response.success, unsupported)
+        response.error_message = "" if response.success else "Some tasks could not be resumed."
+        return response
+
+    def _task_control_error_code(self, success: bool, unsupported: bool) -> str:
+        if success:
+            return ""
+        return ErrorCodeV1.UNSUPPORTED if unsupported else ErrorCodeV1.TASK_START_FAILED
+
     def _reload_config(
         self,
         _request: ReloadConfigV1.Request,
@@ -2372,6 +2541,17 @@ class TaskOrchestratorNode(Node):
         response.error_message = "Task control capability is not available."
         return response
 
+    def _make_task_control_callback(
+        self,
+        task: TaskDefinition,
+        task_id: str,
+        operation: str,
+        hook: TaskControlHook,
+    ) -> Any:
+        if not hook.configured:
+            return None
+        return lambda: self._execute_task_control_hook(task=task, task_id=task_id, operation=operation, hook=hook)
+
     def _make_cancel_callback(self, task: TaskDefinition, task_id: str) -> Any:
         if task.task_server_type == "action":
             timeout_sec = task.cancel_timeout if task.cancel_timeout > 0 else None
@@ -2379,6 +2559,34 @@ class TaskOrchestratorNode(Node):
         if task.task_server_type == "system/mission":
             return lambda: self._cancel_mission(task_id)
         return None
+
+    def _execute_task_control_hook(
+        self,
+        task: TaskDefinition,
+        task_id: str,
+        operation: str,
+        hook: TaskControlHook,
+    ) -> bool:
+        hook_task = TaskDefinition(
+            task_name=f"{task.task_name}/{operation}",
+            topic=hook.topic,
+            msg_interface=hook.msg_interface,
+            task_server_type=hook.task_server_type,
+            cancel_timeout=hook.timeout_sec,
+        )
+        try:
+            if hook.task_server_type == "service":
+                prepared = self._service_task_client.prepare(hook_task, hook.task_data_json)
+                self._service_task_client.execute(prepared)
+                return True
+            if hook.task_server_type == "action":
+                prepared = self._action_task_client.prepare(hook_task, hook.task_data_json)
+                self._action_task_client.execute(prepared, f"{task_id}/{operation}")
+                return True
+        except Exception as exc:  # noqa: BLE001 - control failures are reported through the public service.
+            self.get_logger().warning(f"Failed to {operation} task {task_id}: {exc}")
+            return False
+        return False
 
     def _cancel_active_task(self, task: ActiveTaskEntry) -> bool:
         if task.cancel_callback is None:
@@ -2388,6 +2596,53 @@ class TaskOrchestratorNode(Node):
         except Exception as exc:  # noqa: BLE001 - cancellation failures are reported through the public service.
             self.get_logger().warning(f"Failed to cancel task {task.task_id}: {exc}")
             return False
+
+    def _invoke_active_task_control(self, task: ActiveTaskEntry, operation: str) -> bool:
+        callback = task.pause_callback if operation == "pause" else task.resume_callback
+        if callback is None:
+            return False
+        try:
+            return bool(callback())
+        except Exception as exc:  # noqa: BLE001 - control failures are reported through the public service.
+            self.get_logger().warning(f"Failed to {operation} task {task.task_id}: {exc}")
+            return False
+
+    def _set_active_task_status(self, task_id: str, status: str) -> ActiveTaskEntry | None:
+        active_task = self._active_tasks.get(task_id)
+        if active_task is None:
+            return None
+        updated_task = replace(active_task, status=status)
+        self._active_tasks.remove(task_id)
+        self._active_tasks.add(updated_task)
+        existing_record = self._task_records.get(task_id)
+        task_data_json = existing_record.task_data_json if existing_record is not None else "{}"
+        self._store_active_task_record(updated_task, task_data_json)
+        self._publish_active_tasks()
+        return updated_task
+
+    def _publish_task_control_state_event(
+        self,
+        event_type: str,
+        task: ActiveTaskEntry,
+        previous_status: str,
+    ) -> None:
+        self._publish_event(
+            event_type=event_type,
+            task_id=task.task_id,
+            task_name=task.task_name,
+            source=task.source,
+            correlation_id=task.correlation_id,
+            previous_status=previous_status,
+            status=task.status,
+            priority=task.priority,
+            created_at=task.created_at,
+            started_at=task.started_at,
+            data={
+                "task_server_type": task.task_server_type,
+                "control_capability": event_type.split(".", 1)[-1],
+            },
+            context=task,
+        )
 
     def _cancel_mission(self, mission_task_id: str) -> bool:
         active_subtask_id = self._active_mission_subtasks.get(mission_task_id)
@@ -2802,6 +3057,13 @@ class TaskOrchestratorNode(Node):
             "stopped_task_ids": list(response.stopped_task_ids),
         }
 
+    def _task_control_request_observability_data(self, request: Any) -> dict[str, Any]:
+        return {
+            "requested_task_ids": list(getattr(request, "task_ids", [])),
+            "selector_source": getattr(request, "source", ""),
+            "selector_correlation_id": getattr(request, "correlation_id", ""),
+        }
+
     def _publish_mission_feedback(
         self,
         mission_id: str,
@@ -2922,11 +3184,20 @@ class TaskOrchestratorNode(Node):
         msg.total_duration_sec = self._duration_sec(msg.created_at, msg.finished_at)
         if context is not None:
             self._copy_public_context(context, msg)
-        msg.data_json = self._json_dumps(data or {})
+        event_data = dict(data or {})
+        msg.data_json = self._json_dumps(event_data)
         msg.stamp = self.get_clock().now().to_msg()
+        self._emit_event_hooks(msg, event_data)
         self._set_event_record(msg)
         self._events_pub.publish(msg)
-        self._log_task_event(msg, data or {})
+        self._log_task_event(msg, event_data)
+
+    def _emit_event_hooks(self, event: TaskEventV1, data: dict[str, Any]) -> None:
+        for hook in list(self._event_hooks):
+            try:
+                hook.handle_event(self._copy_task_event(event), dict(data))
+            except Exception as exc:  # noqa: BLE001 - event hooks must not break task execution.
+                self.get_logger().warning(f"Task event hook failed for {event.event_type}: {exc}")
 
     def _set_event_record(self, event: TaskEventV1) -> None:
         self._write_event(event)
@@ -3050,6 +3321,13 @@ class TaskOrchestratorNode(Node):
             "resources": list(task.resources),
             "task_group": task.task_group,
             "capability_tags": list(task.capability_tags),
+            "zone_locked": task.zone_locked,
+            "min_battery_percent": task.min_battery_percent,
+            "allowed_robot_modes": list(task.allowed_robot_modes),
+            "requires_localization": task.requires_localization,
+            "allow_emergency_stop": task.allow_emergency_stop,
+            "supports_pause": task.pause_hook.configured,
+            "supports_resume": task.resume_hook.configured,
             "queue_on_conflict_default": task.queue_on_conflict_default,
             **self._request_scheduling_observability_data(request),
             **self._request_context_observability_data(request),
@@ -3199,6 +3477,13 @@ class TaskOrchestratorNode(Node):
         msg.tags = list(task.tags)
         msg.task_group = task.task_group
         msg.capability_tags = list(task.capability_tags)
+        msg.zone_locked = task.zone_locked
+        msg.min_battery_percent = task.min_battery_percent
+        msg.allowed_robot_modes = list(task.allowed_robot_modes)
+        msg.requires_localization = task.requires_localization
+        msg.allow_emergency_stop = task.allow_emergency_stop
+        msg.supports_pause = task.pause_hook.configured
+        msg.supports_resume = task.resume_hook.configured
         msg.queue_on_conflict_default = task.queue_on_conflict_default
         return msg
 

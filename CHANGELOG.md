@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0 - 2026-06-19
+
+- Added a core policy engine for active-task conflicts and admission decisions.
+- Added zone locks, task admission requirements and capability-tag admission
+  checks.
+- Added admission provider state parameters for battery level, robot mode,
+  localization health, emergency-stop state and available capability tags.
+- Added configurable service/action pause and resume hooks in task YAML.
+- Implemented `/task_orchestrator/pause_tasks` and
+  `/task_orchestrator/resume_tasks` for active tasks with configured hooks while
+  preserving `UNSUPPORTED` responses when hooks are unavailable.
+- Added task introspection fields for zone locks, admission requirements and
+  pause/resume support to `TaskSpecV1`.
+- Added internal task event hooks and task/system pause/resume events.
+- Bumped `task_orchestrator_core` and `task_orchestrator_msgs` to `0.6.0`.
+
 ## 0.5.0 - 2026-06-13
 
 - Added graph-capable `system/mission` execution with validated `depends_on`

@@ -36,9 +36,15 @@ and dispatches configured tasks to existing ROS2 services or actions. It also
 forwards cancellation to cancelable active tasks and reloads task configuration
 from `tasks_config_path` without a node restart.
 
-Conflict handling covers blocking tasks, reentrant tasks, non-reentrant
-same-type replacement, resource locks, task groups and configured
-cancel-as-success reporting.
+Conflict handling is evaluated by the core policy engine. It covers blocking
+tasks, reentrant tasks, non-reentrant same-type replacement, resource locks,
+task groups, zone locks and configured cancel-as-success reporting.
+
+Admission checks use a runtime provider snapshot exposed through node
+parameters: battery level, robot mode, localization health, emergency-stop state
+and available capability tags. Product-specific systems own how those values are
+fed into the node; the core only evaluates task requirements against the current
+snapshot.
 
 Requests can opt into the queued lifecycle with `queue_on_conflict`,
 `scheduled_at` or `delay_sec`. Queued requests are admitted by earliest ready
@@ -69,12 +75,18 @@ Structured event logs use the `task_orchestrator.event.v1` schema across task,
 mission and system events.
 
 The control system tasks use the same execute-task lifecycle as user-defined
-tasks, but bypass blocking admission so an active blocking task can still be
-canceled or stopped.
+tasks, but bypass active-task admission so an active blocking task can still be
+canceled or stopped. `/task_orchestrator/pause_tasks` and
+`/task_orchestrator/resume_tasks` call configured per-task service/action hooks;
+tasks without hooks return `UNSUPPORTED`.
 
 Canceling an accepted `/task_orchestrator/execute_task` action goal forwards
 the cancellation request to the active backing task when it exposes a cancel
 callback.
+
+Internal event hooks can observe materialized `TaskEventV1` messages before
+publication. Hook failures are logged and do not break task execution; external
+bridge, authorization and product-specific behavior stays outside the core.
 
 Task records are process-local and storage-free by default. They are bounded by
 `task_record_limit`; active records are preserved even when the limit is

@@ -67,6 +67,8 @@ Task events:
 - `task.completed`
 - `task.failed`
 - `task.canceled`
+- `task.paused`
+- `task.resumed`
 - `task.rejected`
 - `task.timeout`
 
@@ -87,6 +89,10 @@ System events:
 
 - `system.cancel.requested`
 - `system.cancel.completed`
+- `system.pause.requested`
+- `system.pause.completed`
+- `system.resume.requested`
+- `system.resume.completed`
 - `system.stop.requested`
 - `system.stop.completed`
 - `system.config.reloaded`
@@ -110,7 +116,10 @@ System events:
 - `task.received` data includes generated-ID metadata, priority, scheduling
   hints, fleet-safe context fields and tags.
 - `task.started` data includes task definition flags such as task server type,
-  blocking, reentrant, resource locks, task groups and cancellation behavior.
+  blocking, reentrant, resource locks, task groups, zone locks, admission
+  requirements and cancellation/control behavior.
+- `task.paused` and `task.resumed` data include the control capability that
+  changed active task state.
 - Terminal task event data includes status, error presence, result presence and
   duration fields.
 - Product-specific data can be included by clients, but the core must not depend

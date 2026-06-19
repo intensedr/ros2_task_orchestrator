@@ -30,6 +30,7 @@ class ActiveTaskEntry:
     resources: tuple[str, ...] = field(default_factory=tuple)
     task_group: str = ""
     capability_tags: tuple[str, ...] = field(default_factory=tuple)
+    zone_locked: bool = False
     robot_id: str = ""
     fleet_id: str = ""
     site_id: str = ""
@@ -41,6 +42,8 @@ class ActiveTaskEntry:
     idempotency_key: str = ""
     timeout_sec: float = 0.0
     cancel_callback: Callable[[], bool] | None = field(default=None, compare=False, repr=False)
+    pause_callback: Callable[[], bool] | None = field(default=None, compare=False, repr=False)
+    resume_callback: Callable[[], bool] | None = field(default=None, compare=False, repr=False)
 
 
 class ActiveTaskRegistry:

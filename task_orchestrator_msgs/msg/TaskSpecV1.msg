@@ -25,4 +25,11 @@ string[] resources
 string[] tags
 string task_group
 string[] capability_tags
+bool zone_locked
+float64 min_battery_percent
+string[] allowed_robot_modes
+bool requires_localization
+bool allow_emergency_stop
+bool supports_pause
+bool supports_resume
 bool queue_on_conflict_default

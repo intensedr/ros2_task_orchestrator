@@ -499,6 +499,46 @@ bool include_system_tasks
 TaskSpecV1[] tasks
 ```
 
+`msg/TaskSpecV1.msg`
+
+```text
+string api_version
+string task_id
+string task_name
+string source
+int32 priority
+string correlation_id
+builtin_interfaces/Time created_at
+builtin_interfaces/Time started_at
+builtin_interfaces/Time finished_at
+string status
+string error_code
+string error_message
+string result_json
+string topic
+string msg_interface
+string task_server_type
+bool blocking
+bool cancel_on_stop
+bool cancel_reported_as_success
+bool reentrant
+bool is_system_task
+int32 priority_default
+float64 cancel_timeout
+string[] resources
+string[] tags
+string task_group
+string[] capability_tags
+bool zone_locked
+float64 min_battery_percent
+string[] allowed_robot_modes
+bool requires_localization
+bool allow_emergency_stop
+bool supports_pause
+bool supports_resume
+bool queue_on_conflict_default
+```
+
 `srv/GetTaskV1.srv`
 
 ```text
@@ -549,6 +589,16 @@ string[] failed_task_ids
 string error_code
 string error_message
 ```
+
+Pause/resume semantics:
+
+- Tasks advertise `supports_pause` and `supports_resume` through `TaskSpecV1`.
+- A task supports pause/resume only when its task YAML defines the corresponding
+  service/action hook.
+- Requests with unsupported or missing active tasks return `UNSUPPORTED` and list
+  those IDs in `failed_task_ids`.
+- Successful pause changes the active task status to `PAUSED`; successful resume
+  changes it back to `IN_PROGRESS`.
 
 `srv/ValidateTaskV1.srv`
 
@@ -667,6 +717,24 @@ task_orchestrator:
       resources: ["base", "map"]
       task_group: "navigation"
       capability_tags: ["localization", "motion"]
+      zone_locked: true
+      admission:
+        min_battery_percent: 30
+        allowed_robot_modes: ["AUTO"]
+        requires_localization: true
+        allow_emergency_stop: false
+      pause:
+        task_server_type: "service"
+        topic: "/pause_navigation"
+        msg_interface: "std_srvs/srv/Trigger"
+        task_data_json: {}
+        timeout_sec: 2.0
+      resume:
+        task_server_type: "service"
+        topic: "/resume_navigation"
+        msg_interface: "std_srvs/srv/Trigger"
+        task_data_json: {}
+        timeout_sec: 2.0
       queue_on_conflict_default: false
       tags: ["navigation"]
 ```
