@@ -1,0 +1,15 @@
+{
+  "mission_id": "sim-drone-timeout",
+  "subtasks": [
+    {
+      "subtask_id": "takeoff",
+      "task_name": "drone/takeoff",
+      "task_data_json": {
+        "target_altitude": 1.2,
+        "duration_sec": 5.0,
+        "frame_id": "map"
+      },
+      "timeout_sec": 1.0
+    }
+  ]
+}

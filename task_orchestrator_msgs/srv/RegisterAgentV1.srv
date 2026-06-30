@@ -1,0 +1,11 @@
+string agent_id
+string display_name
+string agent_type
+string[] capabilities
+float64 heartbeat_timeout_sec
+string metadata_json
+---
+bool success
+string error_code
+string error_message
+AgentRecordV1 agent

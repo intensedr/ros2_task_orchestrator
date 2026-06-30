@@ -1,0 +1,468 @@
+#!/usr/bin/env python3
+"""Fake drone action servers and TF publisher for simulation demos."""
+
+from __future__ import annotations
+
+import math
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from typing import Callable
+
+from geometry_msgs.msg import PoseStamped, TransformStamped
+import rclpy
+from rclpy.action import ActionServer, CancelResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from tf2_ros import TransformBroadcaster
+
+from task_orchestrator_sim_drone.action import GoToWaypoint, Hover, Land, Takeoff
+
+
+@dataclass
+class DronePose:
+    x: float
+    y: float
+    z: float
+    yaw: float
+
+
+class FakeDroneServer(Node):
+    """Action-backed fake drone with a moving map -> base_root transform."""
+
+    def __init__(self) -> None:
+        super().__init__("fake_drone_server")
+        self.declare_parameter("frame_id", "map")
+        self.declare_parameter("base_frame_id", "base_root")
+        self.declare_parameter("initial_x", 0.0)
+        self.declare_parameter("initial_y", 0.0)
+        self.declare_parameter("initial_z", 0.10)
+        self.declare_parameter("initial_yaw", 0.0)
+        self.declare_parameter("ground_z", 0.10)
+        self.declare_parameter("update_rate_hz", 20.0)
+        self.declare_parameter("default_takeoff_duration_sec", 4.0)
+        self.declare_parameter("default_land_duration_sec", 4.0)
+        self.declare_parameter("default_hover_duration_sec", 3.0)
+        self.declare_parameter("default_speed_mps", 0.8)
+        self.declare_parameter("gazebo_pose_sync_enabled", False)
+        self.declare_parameter("gazebo_world_name", "drone_demo")
+        self.declare_parameter("gazebo_model_name", "iris_reference")
+        self.declare_parameter("gazebo_pose_sync_rate_hz", 10.0)
+        self.declare_parameter("gazebo_pose_timeout_ms", 50)
+        self.declare_parameter("gazebo_pose_z_offset", 0.0)
+
+        self._frame_id = str(self.get_parameter("frame_id").value)
+        self._base_frame_id = str(self.get_parameter("base_frame_id").value)
+        self._ground_z = float(self.get_parameter("ground_z").value)
+        self._update_period_sec = 1.0 / max(1.0, float(self.get_parameter("update_rate_hz").value))
+        self._default_takeoff_duration_sec = max(
+            0.1,
+            float(self.get_parameter("default_takeoff_duration_sec").value),
+        )
+        self._default_land_duration_sec = max(0.1, float(self.get_parameter("default_land_duration_sec").value))
+        self._default_hover_duration_sec = max(0.1, float(self.get_parameter("default_hover_duration_sec").value))
+        self._default_speed_mps = max(0.05, float(self.get_parameter("default_speed_mps").value))
+        self._gazebo_pose_sync_enabled = _as_bool(self.get_parameter("gazebo_pose_sync_enabled").value)
+        self._gazebo_world_name = str(self.get_parameter("gazebo_world_name").value)
+        self._gazebo_model_name = str(self.get_parameter("gazebo_model_name").value)
+        self._gazebo_pose_sync_period_sec = 1.0 / max(
+            1.0,
+            float(self.get_parameter("gazebo_pose_sync_rate_hz").value),
+        )
+        self._gazebo_pose_timeout_ms = max(1, int(self.get_parameter("gazebo_pose_timeout_ms").value))
+        self._gazebo_pose_z_offset = float(self.get_parameter("gazebo_pose_z_offset").value)
+        self._gazebo_pose_service = f"/world/{self._gazebo_world_name}/set_pose"
+        self._gazebo_transport_node = None
+        self._gazebo_pose_type = None
+        self._gazebo_boolean_type = None
+        self._gazebo_last_sync_at = 0.0
+        self._gazebo_last_warning_at = 0.0
+        self._gazebo_sync_failures = 0
+        self._pose = DronePose(
+            x=float(self.get_parameter("initial_x").value),
+            y=float(self.get_parameter("initial_y").value),
+            z=float(self.get_parameter("initial_z").value),
+            yaw=float(self.get_parameter("initial_yaw").value),
+        )
+        self._pose_lock = threading.Lock()
+        self._callback_group = ReentrantCallbackGroup()
+        self._tf_broadcaster = TransformBroadcaster(self)
+        self._pose_pub = self.create_publisher(PoseStamped, "/drone/pose", 10)
+        self.create_timer(self._update_period_sec, self._publish_pose)
+        self._setup_gazebo_pose_sync()
+
+        self._takeoff_server = ActionServer(
+            self,
+            Takeoff,
+            "/drone/takeoff",
+            execute_callback=self._execute_takeoff,
+            cancel_callback=self._cancel_callback,
+            callback_group=self._callback_group,
+        )
+        self._waypoint_server = ActionServer(
+            self,
+            GoToWaypoint,
+            "/drone/go_to_waypoint",
+            execute_callback=self._execute_waypoint,
+            cancel_callback=self._cancel_callback,
+            callback_group=self._callback_group,
+        )
+        self._hover_server = ActionServer(
+            self,
+            Hover,
+            "/drone/hover",
+            execute_callback=self._execute_hover,
+            cancel_callback=self._cancel_callback,
+            callback_group=self._callback_group,
+        )
+        self._land_server = ActionServer(
+            self,
+            Land,
+            "/drone/land",
+            execute_callback=self._execute_land,
+            cancel_callback=self._cancel_callback,
+            callback_group=self._callback_group,
+        )
+
+    def destroy_node(self) -> bool:
+        self._takeoff_server.destroy()
+        self._waypoint_server.destroy()
+        self._hover_server.destroy()
+        self._land_server.destroy()
+        return super().destroy_node()
+
+    def _cancel_callback(self, _goal_handle: object) -> CancelResponse:
+        return CancelResponse.ACCEPT
+
+    def _execute_takeoff(self, goal_handle: object) -> Takeoff.Result:
+        request = goal_handle.request
+        if request.frame_id and request.frame_id != self._frame_id:
+            return self._abort_takeoff(goal_handle, f"unsupported frame_id: {request.frame_id}")
+        target_z = max(self._ground_z, float(request.target_altitude))
+        duration_sec = float(request.duration_sec) if request.duration_sec > 0 else self._default_takeoff_duration_sec
+        start = self._get_pose()
+
+        def apply(progress: float) -> None:
+            pose = DronePose(start.x, start.y, _lerp(start.z, target_z, progress), start.yaw)
+            self._set_pose(pose)
+            feedback = Takeoff.Feedback()
+            feedback.current_altitude = pose.z
+            feedback.progress = progress
+            feedback.state = "takeoff"
+            goal_handle.publish_feedback(feedback)
+
+        canceled = self._run_progress(goal_handle, duration_sec, apply)
+        result = Takeoff.Result()
+        result.final_altitude = self._get_pose().z
+        if canceled:
+            result.success = False
+            result.error_message = "takeoff canceled"
+            return result
+        goal_handle.succeed()
+        result.success = True
+        result.error_message = ""
+        return result
+
+    def _execute_waypoint(self, goal_handle: object) -> GoToWaypoint.Result:
+        request = goal_handle.request
+        target = request.target_pose
+        if target.header.frame_id and target.header.frame_id != self._frame_id:
+            return self._abort_waypoint(goal_handle, f"unsupported frame_id: {target.header.frame_id}")
+
+        start = self._get_pose()
+        target_pose = DronePose(
+            x=float(target.pose.position.x),
+            y=float(target.pose.position.y),
+            z=max(self._ground_z, float(target.pose.position.z)),
+            yaw=_yaw_from_quaternion(target.pose.orientation, default=start.yaw),
+        )
+        distance = _distance(start, target_pose)
+        speed = max(0.05, float(request.speed_mps) if request.speed_mps > 0 else self._default_speed_mps)
+        duration_sec = max(0.5, distance / speed)
+
+        def apply(progress: float) -> None:
+            pose = DronePose(
+                x=_lerp(start.x, target_pose.x, progress),
+                y=_lerp(start.y, target_pose.y, progress),
+                z=_lerp(start.z, target_pose.z, progress),
+                yaw=_lerp_angle(start.yaw, target_pose.yaw, progress),
+            )
+            self._set_pose(pose)
+            feedback = GoToWaypoint.Feedback()
+            feedback.current_pose = self._pose_msg(pose)
+            feedback.distance_remaining = _distance(pose, target_pose)
+            feedback.progress = progress
+            feedback.state = "go_to_waypoint"
+            goal_handle.publish_feedback(feedback)
+
+        canceled = self._run_progress(goal_handle, duration_sec, apply)
+        result = GoToWaypoint.Result()
+        result.final_pose = self._pose_msg(self._get_pose())
+        if canceled:
+            result.success = False
+            result.error_message = "waypoint navigation canceled"
+            return result
+        goal_handle.succeed()
+        result.success = True
+        result.error_message = ""
+        return result
+
+    def _execute_hover(self, goal_handle: object) -> Hover.Result:
+        request = goal_handle.request
+        duration_sec = float(request.duration_sec) if request.duration_sec > 0 else self._default_hover_duration_sec
+
+        def apply(progress: float) -> None:
+            feedback = Hover.Feedback()
+            feedback.elapsed_sec = progress * duration_sec
+            feedback.progress = progress
+            feedback.state = "hover"
+            goal_handle.publish_feedback(feedback)
+
+        canceled = self._run_progress(goal_handle, duration_sec, apply)
+        result = Hover.Result()
+        result.elapsed_sec = duration_sec
+        if canceled:
+            result.success = False
+            result.error_message = "hover canceled"
+            return result
+        goal_handle.succeed()
+        result.success = True
+        result.error_message = ""
+        return result
+
+    def _execute_land(self, goal_handle: object) -> Land.Result:
+        request = goal_handle.request
+        duration_sec = float(request.duration_sec) if request.duration_sec > 0 else self._default_land_duration_sec
+        start = self._get_pose()
+
+        def apply(progress: float) -> None:
+            pose = DronePose(start.x, start.y, _lerp(start.z, self._ground_z, progress), start.yaw)
+            self._set_pose(pose)
+            feedback = Land.Feedback()
+            feedback.current_altitude = pose.z
+            feedback.progress = progress
+            feedback.state = f"land:{request.landing_zone_id}" if request.landing_zone_id else "land"
+            goal_handle.publish_feedback(feedback)
+
+        canceled = self._run_progress(goal_handle, duration_sec, apply)
+        result = Land.Result()
+        result.final_altitude = self._get_pose().z
+        if canceled:
+            result.success = False
+            result.error_message = "land canceled"
+            return result
+        goal_handle.succeed()
+        result.success = True
+        result.error_message = ""
+        return result
+
+    def _abort_takeoff(self, goal_handle: object, message: str) -> Takeoff.Result:
+        goal_handle.abort()
+        result = Takeoff.Result()
+        result.success = False
+        result.error_message = message
+        result.final_altitude = self._get_pose().z
+        return result
+
+    def _abort_waypoint(self, goal_handle: object, message: str) -> GoToWaypoint.Result:
+        goal_handle.abort()
+        result = GoToWaypoint.Result()
+        result.success = False
+        result.error_message = message
+        result.final_pose = self._pose_msg(self._get_pose())
+        return result
+
+    def _run_progress(
+        self,
+        goal_handle: object,
+        duration_sec: float,
+        apply: Callable[[float], None],
+    ) -> bool:
+        duration_sec = max(self._update_period_sec, duration_sec)
+        started_at = time.monotonic()
+        while rclpy.ok():
+            elapsed = time.monotonic() - started_at
+            progress = min(1.0, elapsed / duration_sec)
+            apply(progress)
+            self._publish_pose()
+            if progress >= 1.0:
+                return False
+            if goal_handle.is_cancel_requested:
+                goal_handle.canceled()
+                return True
+            time.sleep(self._update_period_sec)
+        goal_handle.abort()
+        return True
+
+    def _get_pose(self) -> DronePose:
+        with self._pose_lock:
+            return DronePose(self._pose.x, self._pose.y, self._pose.z, self._pose.yaw)
+
+    def _set_pose(self, pose: DronePose) -> None:
+        with self._pose_lock:
+            self._pose = pose
+
+    def _pose_msg(self, pose: DronePose) -> PoseStamped:
+        msg = PoseStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self._frame_id
+        msg.pose.position.x = pose.x
+        msg.pose.position.y = pose.y
+        msg.pose.position.z = pose.z
+        qx, qy, qz, qw = _quaternion_from_yaw(pose.yaw)
+        msg.pose.orientation.x = qx
+        msg.pose.orientation.y = qy
+        msg.pose.orientation.z = qz
+        msg.pose.orientation.w = qw
+        return msg
+
+    def _publish_pose(self) -> None:
+        pose = self._get_pose()
+        pose_msg = self._pose_msg(pose)
+        self._pose_pub.publish(pose_msg)
+
+        transform = TransformStamped()
+        transform.header = pose_msg.header
+        transform.child_frame_id = self._base_frame_id
+        transform.transform.translation.x = pose.x
+        transform.transform.translation.y = pose.y
+        transform.transform.translation.z = pose.z
+        transform.transform.rotation = pose_msg.pose.orientation
+        self._tf_broadcaster.sendTransform(transform)
+        self._sync_gazebo_pose(pose)
+
+    def _setup_gazebo_pose_sync(self) -> None:
+        if not self._gazebo_pose_sync_enabled:
+            return
+        try:
+            from gz.msgs10.boolean_pb2 import Boolean
+            from gz.msgs10.pose_pb2 import Pose
+            from gz.transport13 import Node as GazeboTransportNode
+        except Exception as exc:  # pragma: no cover - depends on Gazebo installation.
+            self.get_logger().warning(f"Gazebo pose sync disabled: Gazebo Python bindings unavailable: {exc}")
+            self._gazebo_pose_sync_enabled = False
+            return
+
+        try:
+            self._gazebo_transport_node = GazeboTransportNode()
+        except Exception as exc:  # pragma: no cover - depends on host network permissions.
+            self.get_logger().warning(f"Gazebo pose sync disabled: failed to create transport node: {exc}")
+            self._gazebo_pose_sync_enabled = False
+            return
+
+        self._gazebo_pose_type = Pose
+        self._gazebo_boolean_type = Boolean
+        self.get_logger().info(
+            "Gazebo pose sync enabled: "
+            f"{self._gazebo_model_name} -> {self._gazebo_pose_service}"
+        )
+
+    def _sync_gazebo_pose(self, pose: DronePose) -> None:
+        if (
+            not self._gazebo_pose_sync_enabled
+            or self._gazebo_transport_node is None
+            or self._gazebo_pose_type is None
+            or self._gazebo_boolean_type is None
+        ):
+            return
+
+        now = time.monotonic()
+        if now - self._gazebo_last_sync_at < self._gazebo_pose_sync_period_sec:
+            return
+        self._gazebo_last_sync_at = now
+
+        request = self._gazebo_pose_type()
+        request.name = self._gazebo_model_name
+        request.position.x = pose.x
+        request.position.y = pose.y
+        request.position.z = pose.z + self._gazebo_pose_z_offset
+        request.orientation.x = 0.0
+        request.orientation.y = 0.0
+        request.orientation.z = math.sin(pose.yaw * 0.5)
+        request.orientation.w = math.cos(pose.yaw * 0.5)
+
+        success, response = self._gazebo_transport_node.request(
+            self._gazebo_pose_service,
+            request,
+            self._gazebo_pose_type,
+            self._gazebo_boolean_type,
+            self._gazebo_pose_timeout_ms,
+        )
+        response_ok = bool(getattr(response, "data", False))
+        if success and response_ok:
+            if self._gazebo_sync_failures:
+                self.get_logger().info("Gazebo pose sync recovered")
+            self._gazebo_sync_failures = 0
+            return
+
+        self._gazebo_sync_failures += 1
+        if now - self._gazebo_last_warning_at >= 5.0:
+            self._gazebo_last_warning_at = now
+            self.get_logger().warning(
+                "Gazebo pose sync failed "
+                f"for service {self._gazebo_pose_service} and model {self._gazebo_model_name} "
+                f"(failure count: {self._gazebo_sync_failures})"
+            )
+
+
+def _lerp(start: float, end: float, progress: float) -> float:
+    return start + (end - start) * progress
+
+
+def _lerp_angle(start: float, end: float, progress: float) -> float:
+    delta = math.atan2(math.sin(end - start), math.cos(end - start))
+    return start + delta * progress
+
+
+def _distance(start: DronePose, end: DronePose) -> float:
+    return math.sqrt((end.x - start.x) ** 2 + (end.y - start.y) ** 2 + (end.z - start.z) ** 2)
+
+
+def _quaternion_from_yaw(yaw: float) -> tuple[float, float, float, float]:
+    half_yaw = yaw * 0.5
+    return (0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw))
+
+
+def _yaw_from_quaternion(quaternion: object, default: float) -> float:
+    x = float(quaternion.x)
+    y = float(quaternion.y)
+    z = float(quaternion.z)
+    w = float(quaternion.w)
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    if norm <= 1e-9:
+        return default
+    x /= norm
+    y /= norm
+    z /= norm
+    w /= norm
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def main() -> int:
+    rclpy.init()
+    node = FakeDroneServer()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        executor.remove_node(node)
+        node.destroy_node()
+        rclpy.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,5 @@
+{
+  "task_ids": ["sim-nav2-queued-navigation"],
+  "source": "sim-nav2",
+  "correlation_id": "sim-nav2-cancel-navigation"
+}

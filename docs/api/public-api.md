@@ -22,6 +22,20 @@ The public API is defined by `task_orchestrator_msgs`.
 - `/task_orchestrator/resume_tasks`: `ResumeTasksV1`
 - `/task_orchestrator/validate_task`: `ValidateTaskV1`
 
+Agent-ready mission operation:
+
+- `/task_orchestrator/register_agent`: `RegisterAgentV1`
+- `/task_orchestrator/list_agents`: `ListAgentsV1`
+- `/task_orchestrator/claim_mission`: `ClaimMissionV1`
+- `/task_orchestrator/release_mission`: `ReleaseMissionV1`
+- `/task_orchestrator/validate_mission`: `ValidateMissionV1`
+- `/task_orchestrator/submit_mission`: `SubmitMissionV1`
+- `/task_orchestrator/cancel_mission`: `CancelMissionV1`
+- `/task_orchestrator/pause_mission`: `PauseMissionV1`
+- `/task_orchestrator/resume_mission`: `ResumeMissionV1`
+- `/task_orchestrator/retry_mission`: `RetryMissionV1`
+- `/task_orchestrator/get_mission_state`: `GetMissionStateV1`
+
 Additional V1 query/admin endpoints:
 
 - `/task_orchestrator/list_task_records`: `ListTaskRecordsV1`
@@ -35,6 +49,14 @@ Additional V1 query/admin endpoints:
 - `system/mission`
 - `system/cancel_task`
 - `system/stop`
+
+## Agent Boundary
+
+Agents register and heartbeat through the public API, then claim mission leases
+before issuing mission commands. Agents produce structured mission JSON; the
+core normalizes and validates that JSON before executing `system/mission`.
+Planner selection, agent runtime loops and optional human approval remain
+outside the core.
 
 ## Field Reference
 

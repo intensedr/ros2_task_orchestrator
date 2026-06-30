@@ -1,0 +1,59 @@
+{
+  "mission_id": "sim-drone-takeoff-waypoint-land",
+  "subtasks": [
+    {
+      "subtask_id": "takeoff",
+      "task_name": "drone/takeoff",
+      "task_data_json": {
+        "target_altitude": 1.5,
+        "duration_sec": 3.0,
+        "frame_id": "map"
+      },
+      "timeout_sec": 10.0
+    },
+    {
+      "subtask_id": "waypoint",
+      "task_name": "drone/go_to_waypoint",
+      "depends_on": ["takeoff"],
+      "task_data_json": {
+        "target_pose": {
+          "header": {
+            "frame_id": "map"
+          },
+          "pose": {
+            "position": {
+              "x": 2.0,
+              "y": 0.8,
+              "z": 1.5
+            },
+            "orientation": {
+              "w": 1.0
+            }
+          }
+        },
+        "speed_mps": 0.8,
+        "zone_id": "inspection-zone-a"
+      },
+      "timeout_sec": 20.0
+    },
+    {
+      "subtask_id": "hover",
+      "task_name": "drone/hover",
+      "depends_on": ["waypoint"],
+      "task_data_json": {
+        "duration_sec": 2.0
+      },
+      "timeout_sec": 8.0
+    },
+    {
+      "subtask_id": "land",
+      "task_name": "drone/land",
+      "depends_on": ["hover"],
+      "task_data_json": {
+        "landing_zone_id": "home",
+        "duration_sec": 3.0
+      },
+      "timeout_sec": 10.0
+    }
+  ]
+}

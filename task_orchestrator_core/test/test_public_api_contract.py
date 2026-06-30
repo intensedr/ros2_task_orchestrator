@@ -1,10 +1,21 @@
 from task_orchestrator_core.constants import (
     ACTION_EXECUTE_TASK,
+    SERVICE_CANCEL_MISSION,
     SERVICE_CANCEL_TASKS,
+    SERVICE_CLAIM_MISSION,
+    SERVICE_GET_MISSION_STATE,
     SERVICE_GET_TASK,
+    SERVICE_LIST_AGENTS,
     SERVICE_LIST_TASKS,
+    SERVICE_PAUSE_MISSION,
     SERVICE_PAUSE_TASKS,
+    SERVICE_REGISTER_AGENT,
+    SERVICE_RELEASE_MISSION,
+    SERVICE_RESUME_MISSION,
     SERVICE_RESUME_TASKS,
+    SERVICE_RETRY_MISSION,
+    SERVICE_SUBMIT_MISSION,
+    SERVICE_VALIDATE_MISSION,
     SERVICE_VALIDATE_TASK,
     TOPIC_ACTIVE_TASKS,
     TOPIC_EVENTS,
@@ -15,7 +26,11 @@ from task_orchestrator_msgs.action import ExecuteTaskV1
 from task_orchestrator_msgs.msg import (
     ActiveTaskArrayV1,
     ActiveTaskV1,
+    AgentRecordV1,
+    AgentStatusV1,
     ErrorCodeV1,
+    MissionLeaseStatusV1,
+    MissionLeaseV1,
     SubtaskGoalV1,
     SubtaskResultV1,
     TaskEventV1,
@@ -25,7 +40,16 @@ from task_orchestrator_msgs.msg import (
     TaskSpecV1,
     TaskStatusV1,
 )
-from task_orchestrator_msgs.srv import ListEventsV1, ListTaskRecordsV1, ListTasksV1, ValidateTaskV1
+from task_orchestrator_msgs.srv import (
+    ClaimMissionV1,
+    ListEventsV1,
+    ListTaskRecordsV1,
+    ListTasksV1,
+    RegisterAgentV1,
+    SubmitMissionV1,
+    ValidateMissionV1,
+    ValidateTaskV1,
+)
 
 
 PUBLIC_METADATA_FIELDS = (
@@ -63,6 +87,17 @@ def test_public_ros_names_contract():
     assert SERVICE_PAUSE_TASKS == "/task_orchestrator/pause_tasks"
     assert SERVICE_RESUME_TASKS == "/task_orchestrator/resume_tasks"
     assert SERVICE_VALIDATE_TASK == "/task_orchestrator/validate_task"
+    assert SERVICE_REGISTER_AGENT == "/task_orchestrator/register_agent"
+    assert SERVICE_LIST_AGENTS == "/task_orchestrator/list_agents"
+    assert SERVICE_CLAIM_MISSION == "/task_orchestrator/claim_mission"
+    assert SERVICE_RELEASE_MISSION == "/task_orchestrator/release_mission"
+    assert SERVICE_VALIDATE_MISSION == "/task_orchestrator/validate_mission"
+    assert SERVICE_SUBMIT_MISSION == "/task_orchestrator/submit_mission"
+    assert SERVICE_CANCEL_MISSION == "/task_orchestrator/cancel_mission"
+    assert SERVICE_PAUSE_MISSION == "/task_orchestrator/pause_mission"
+    assert SERVICE_RESUME_MISSION == "/task_orchestrator/resume_mission"
+    assert SERVICE_RETRY_MISSION == "/task_orchestrator/retry_mission"
+    assert SERVICE_GET_MISSION_STATE == "/task_orchestrator/get_mission_state"
 
 
 def test_public_message_metadata_contract():
@@ -85,7 +120,7 @@ def test_public_message_metadata_contract():
 
 def test_execute_task_action_contract():
     goal = ExecuteTaskV1.Goal()
-    goal.api_version = "v1beta1"
+    goal.api_version = "v1"
     goal.task_name = "example/task"
     goal.task_data_json = "{}"
     goal.delay_sec = 1.0
@@ -95,7 +130,7 @@ def test_execute_task_action_contract():
     goal.fleet_id = "fleet-1"
     goal.trace_id = "trace-1"
 
-    assert goal.api_version == "v1beta1"
+    assert goal.api_version == "v1"
     assert goal.task_name == "example/task"
     assert goal.task_data_json == "{}"
     assert goal.delay_sec == 1.0
@@ -106,10 +141,44 @@ def test_execute_task_action_contract():
     assert goal.trace_id == "trace-1"
 
 
+def test_agent_record_message_contract():
+    agent = AgentRecordV1()
+    fields = AgentRecordV1.get_fields_and_field_types()
+
+    agent.api_version = "v1"
+    agent.agent_id = "agent-1"
+    agent.heartbeat_status = AgentStatusV1.ONLINE
+    agent.capabilities = ["mission.compose"]
+    agent.current_mission_id = "mission-1"
+
+    assert "last_heartbeat_at" in fields
+    assert "stale_at" in fields
+    assert agent.agent_id == "agent-1"
+    assert agent.heartbeat_status == "ONLINE"
+    assert agent.current_mission_id == "mission-1"
+
+
+def test_mission_lease_message_contract():
+    lease = MissionLeaseV1()
+    fields = MissionLeaseV1.get_fields_and_field_types()
+
+    lease.api_version = "v1"
+    lease.mission_id = "mission-1"
+    lease.agent_id = "agent-1"
+    lease.lease_token = "lease-token"
+    lease.lease_status = MissionLeaseStatusV1.ACTIVE
+
+    assert "lease_expires_at" in fields
+    assert lease.mission_id == "mission-1"
+    assert lease.lease_status == "ACTIVE"
+
+
 def test_status_and_error_constants():
     assert TaskStatusV1.RECEIVED == "RECEIVED"
     assert TaskStatusV1.PENDING == "PENDING"
     assert TaskStatusV1.ERROR == "ERROR"
+    assert AgentStatusV1.ONLINE == "ONLINE"
+    assert MissionLeaseStatusV1.ACTIVE == "ACTIVE"
     assert ErrorCodeV1.DEADLINE_EXCEEDED == "DEADLINE_EXCEEDED"
     assert ErrorCodeV1.UNSUPPORTED == "UNSUPPORTED"
 
@@ -200,6 +269,65 @@ def test_validate_task_service_contract():
     assert request.include_schema is True
     assert response.valid is True
     assert response.normalized_task_data_json == '{"duration_sec": 0}'
+
+
+def test_agent_registry_service_contract():
+    register_request = RegisterAgentV1.Request()
+    register_response = RegisterAgentV1.Response()
+
+    register_request.agent_id = "agent-1"
+    register_request.display_name = "Planner"
+    register_request.agent_type = "planner"
+    register_request.capabilities = ["mission.compose"]
+    register_request.heartbeat_timeout_sec = 30.0
+    register_request.metadata_json = '{"runtime": "external"}'
+    register_response.success = True
+    register_response.agent.agent_id = "agent-1"
+    register_response.agent.heartbeat_status = AgentStatusV1.ONLINE
+
+    assert register_request.agent_id == "agent-1"
+    assert register_request.capabilities == ["mission.compose"]
+    assert register_response.success is True
+    assert register_response.agent.heartbeat_status == "ONLINE"
+
+
+def test_mission_lease_service_contract():
+    claim_request = ClaimMissionV1.Request()
+    claim_response = ClaimMissionV1.Response()
+
+    claim_request.agent_id = "agent-1"
+    claim_request.mission_id = "mission-1"
+    claim_request.lease_duration_sec = 120.0
+    claim_response.success = True
+    claim_response.lease.mission_id = "mission-1"
+    claim_response.lease.agent_id = "agent-1"
+    claim_response.lease.lease_status = MissionLeaseStatusV1.ACTIVE
+
+    assert claim_request.mission_id == "mission-1"
+    assert claim_request.lease_duration_sec == 120.0
+    assert claim_response.lease.lease_status == "ACTIVE"
+
+
+def test_agent_mission_command_service_contract():
+    validate_request = ValidateMissionV1.Request()
+    submit_request = SubmitMissionV1.Request()
+    submit_response = SubmitMissionV1.Response()
+
+    validate_request.agent_id = "agent-1"
+    validate_request.mission_id = "mission-1"
+    validate_request.mission_json = '{"mission_id": "mission-1", "subtasks": []}'
+    validate_request.include_schema = True
+    submit_request.agent_id = "agent-1"
+    submit_request.mission_id = "mission-1"
+    submit_request.mission_json = validate_request.mission_json
+    submit_request.lease_token = "lease-token"
+    submit_request.queue_on_conflict = True
+    submit_response.success = True
+    submit_response.task_id = "mission-task-1"
+
+    assert validate_request.include_schema is True
+    assert submit_request.queue_on_conflict is True
+    assert submit_response.task_id == "mission-task-1"
 
 
 def test_task_record_scheduling_contract():

@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<sdf version="1.11">
+  <world name="drone_demo">
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics" />
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands" />
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster" />
+    <light name="sun" type="directional">
+      <pose relative_to="world">0 0 5 0 0 0</pose>
+      <cast_shadows>true</cast_shadows>
+      <intensity>0.8</intensity>
+      <direction>-0.5 0.1 -0.9</direction>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+    </light>
+    <model name="demo_ground">
+      <static>true</static>
+      <pose relative_to="world">0 0 0 0 0 0</pose>
+      <link name="ground_link">
+        <collision name="ground_collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>8.0 6.0</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="ground_visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>8.0 6.0</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.25 0.27 0.24 1</ambient>
+            <diffuse>0.25 0.27 0.24 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <include>
+      <name>iris_reference</name>
+      <uri>model://iris_with_standoffs</uri>
+      <pose relative_to="world">0 0 0.4 0 0 0</pose>
+      <static>true</static>
+    </include>
+  </world>
+</sdf>

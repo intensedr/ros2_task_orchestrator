@@ -1,0 +1,11 @@
+string agent_id
+string mission_id
+string lease_token
+string source
+string correlation_id
+---
+bool success
+string[] resumed_task_ids
+string[] failed_task_ids
+string error_code
+string error_message

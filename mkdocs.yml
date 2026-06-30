@@ -25,7 +25,10 @@ nav:
       - Public API: api/public-api.md
       - Field Reference: public_api_reference.md
   - Examples:
+      - Agent Connection: examples/agent_connection.md
       - Nav2 Tasks: examples/nav2.md
+      - Nav2 Simulation: examples/sim_nav2.md
+      - Drone Simulation: examples/sim_drone.md
   - Operations:
       - Recovery: operations/recovery.md
       - External Clients: external_client_integration.md

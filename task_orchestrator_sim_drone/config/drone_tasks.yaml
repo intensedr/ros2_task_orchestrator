@@ -1,0 +1,64 @@
+tasks:
+  - task_name: drone/takeoff
+    topic: /drone/takeoff
+    msg_interface: task_orchestrator_sim_drone/action/Takeoff
+    task_server_type: action
+    blocking: true
+    cancel_on_stop: true
+    cancel_reported_as_success: false
+    reentrant: false
+    priority_default: 0
+    cancel_timeout: 10.0
+    resources: [airframe]
+    tags: [drone, flight, takeoff]
+    task_group: drone_flight
+    capability_tags: [flight, localization]
+    zone_locked: false
+
+  - task_name: drone/go_to_waypoint
+    topic: /drone/go_to_waypoint
+    msg_interface: task_orchestrator_sim_drone/action/GoToWaypoint
+    task_server_type: action
+    blocking: true
+    cancel_on_stop: true
+    cancel_reported_as_success: false
+    reentrant: false
+    priority_default: 0
+    cancel_timeout: 10.0
+    resources: [airframe]
+    tags: [drone, flight, waypoint]
+    task_group: drone_flight
+    capability_tags: [flight, localization]
+    zone_locked: true
+
+  - task_name: drone/hover
+    topic: /drone/hover
+    msg_interface: task_orchestrator_sim_drone/action/Hover
+    task_server_type: action
+    blocking: true
+    cancel_on_stop: true
+    cancel_reported_as_success: false
+    reentrant: false
+    priority_default: 0
+    cancel_timeout: 10.0
+    resources: [airframe]
+    tags: [drone, flight, hover]
+    task_group: drone_flight
+    capability_tags: [flight, localization]
+    zone_locked: false
+
+  - task_name: drone/land
+    topic: /drone/land
+    msg_interface: task_orchestrator_sim_drone/action/Land
+    task_server_type: action
+    blocking: true
+    cancel_on_stop: true
+    cancel_reported_as_success: false
+    reentrant: false
+    priority_default: 0
+    cancel_timeout: 10.0
+    resources: [airframe]
+    tags: [drone, flight, land]
+    task_group: drone_flight
+    capability_tags: [flight, localization]
+    zone_locked: true

@@ -12,6 +12,10 @@ The project is designed as an edge task layer. Existing ROS2 actions and
 services keep implementing robot behavior; the orchestrator provides a common
 entry point, task state, results, feedback and events.
 
+The 1.0 API also exposes mission-operating agent endpoints for registration,
+heartbeat state, mission leases, validated mission submission and mission
+control without embedding an agent runtime in the core.
+
 ## ROS2 Distribution Support
 
 | Distribution | Status | Notes |
@@ -30,6 +34,8 @@ target.
 - `task_orchestrator_msgs`: public ROS2 messages, services and actions.
 - `task_orchestrator_core`: core orchestrator node and task lifecycle logic.
 - `task_orchestrator_examples`: example configs and launch files.
+- `task_orchestrator_sim_nav2`: optional Nav2 TurtleBot simulation scenarios.
+- `task_orchestrator_sim_drone`: optional fake drone simulation scenarios.
 
 ## Build
 
@@ -69,6 +75,8 @@ docker build --build-arg ROS_DISTRO=jazzy -f docker/Dockerfile -t ros-task-orche
 - [SQLite Storage](docs/operations/sqlite-storage.md): optional durability.
 - [Recovery](docs/operations/recovery.md): late-client and restart recovery.
 - [Nav2 Example](docs/examples/nav2.md): navigation task config.
+- [Nav2 Simulation](docs/examples/sim_nav2.md): optional TurtleBot/Nav2 simulation.
+- [Drone Simulation](docs/examples/sim_drone.md): optional fake drone mission simulation.
 - [Architecture](docs/architecture.md): core boundaries and runtime shape.
 
 ## License

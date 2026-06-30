@@ -1,0 +1,28 @@
+{
+  "api_version": "v1",
+  "task_id": "sim-nav2-queued-navigation",
+  "task_name": "navigation/navigate_to_pose",
+  "source": "sim-nav2",
+  "priority": 0,
+  "correlation_id": "sim-nav2-queued-navigation",
+  "task_data_json": {
+    "pose": {
+      "header": {
+        "frame_id": "map"
+      },
+      "pose": {
+        "position": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "orientation": {
+          "w": 1.0
+        }
+      }
+    },
+    "behavior_tree": ""
+  },
+  "queue_on_conflict": true,
+  "timeout_sec": 120.0
+}

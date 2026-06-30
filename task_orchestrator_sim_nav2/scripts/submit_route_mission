@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""Submit a Nav2 route mission through the public mission API."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+from ament_index_python.packages import get_package_share_directory
+import rclpy
+from rclpy.node import Node
+
+from task_orchestrator_msgs.msg import TaskStatusV1
+from task_orchestrator_msgs.srv import GetMissionStateV1, RegisterAgentV1, SubmitMissionV1
+
+
+TERMINAL_STATUSES = {
+    TaskStatusV1.DONE,
+    TaskStatusV1.ERROR,
+    TaskStatusV1.CANCELED,
+    TaskStatusV1.SKIPPED,
+    TaskStatusV1.REJECTED,
+}
+
+
+def _default_mission_path() -> Path:
+    package_share = get_package_share_directory("task_orchestrator_sim_nav2")
+    return Path(package_share) / "missions" / "route_mission.json"
+
+
+def _load_mission(path: Path, mission_id: str) -> tuple[str, str]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("mission JSON must decode to an object")
+    base_mission_id = str(payload.get("mission_id") or "sim-nav2-route")
+    resolved_mission_id = mission_id or f"{base_mission_id}-{uuid.uuid4().hex[:8]}"
+    payload["mission_id"] = resolved_mission_id
+    return resolved_mission_id, json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def _wait_for_service(node: Node, client: Any, service_name: str, timeout_sec: float) -> None:
+    deadline = time.monotonic() + timeout_sec
+    while rclpy.ok():
+        if client.wait_for_service(timeout_sec=0.25):
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"service is not available: {service_name}")
+
+
+def _call(node: Node, client: Any, request: Any, timeout_sec: float) -> Any:
+    future = client.call_async(request)
+    deadline = time.monotonic() + timeout_sec
+    while rclpy.ok() and not future.done():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("service call timed out")
+        rclpy.spin_once(node, timeout_sec=min(0.1, remaining))
+    if future.exception() is not None:
+        raise RuntimeError(f"service call failed: {future.exception()}")
+    return future.result()
+
+
+def _register_agent(node: Node, args: argparse.Namespace) -> None:
+    client = node.create_client(RegisterAgentV1, "/task_orchestrator/register_agent")
+    _wait_for_service(node, client, "/task_orchestrator/register_agent", args.service_timeout_sec)
+
+    request = RegisterAgentV1.Request()
+    request.agent_id = args.agent_id
+    request.display_name = "Nav2 mission demo"
+    request.agent_type = "demo"
+    request.capabilities = ["nav2", "navigation", "motion"]
+    request.heartbeat_timeout_sec = args.heartbeat_timeout_sec
+    request.metadata_json = '{"example":"task_orchestrator_sim_nav2"}'
+
+    response = _call(node, client, request, args.service_timeout_sec)
+    if not response.success:
+        raise RuntimeError(f"register_agent failed: {response.error_code} {response.error_message}")
+
+
+def _submit_mission(
+    node: Node,
+    args: argparse.Namespace,
+    mission_id: str,
+    mission_json: str,
+) -> SubmitMissionV1.Response:
+    client = node.create_client(SubmitMissionV1, "/task_orchestrator/submit_mission")
+    _wait_for_service(node, client, "/task_orchestrator/submit_mission", args.service_timeout_sec)
+
+    request = SubmitMissionV1.Request()
+    request.agent_id = args.agent_id
+    request.mission_id = mission_id
+    request.task_id = args.task_id
+    request.mission_json = mission_json
+    request.lease_duration_sec = args.lease_duration_sec
+    request.source = args.source
+    request.priority = args.priority
+    request.correlation_id = args.correlation_id or mission_id
+    request.timeout_sec = args.timeout_sec
+    request.queue_on_conflict = args.queue_on_conflict
+    request.metadata_json = args.metadata_json
+
+    response = _call(node, client, request, args.service_timeout_sec)
+    if not response.success:
+        raise RuntimeError(f"submit_mission failed: {response.error_code} {response.error_message}")
+    return response
+
+
+def _mission_status(response: GetMissionStateV1.Response) -> str:
+    status = response.task.result.status or response.task.status
+    return status or "UNKNOWN"
+
+
+def _wait_for_mission(node: Node, args: argparse.Namespace, mission_id: str) -> str:
+    client = node.create_client(GetMissionStateV1, "/task_orchestrator/get_mission_state")
+    _wait_for_service(node, client, "/task_orchestrator/get_mission_state", args.service_timeout_sec)
+
+    deadline = time.monotonic() + args.wait_timeout_sec
+    last_status = ""
+    while rclpy.ok():
+        request = GetMissionStateV1.Request()
+        request.agent_id = args.agent_id
+        request.mission_id = mission_id
+        response = _call(node, client, request, args.service_timeout_sec)
+        if not response.found:
+            status = "NOT_FOUND"
+        else:
+            status = _mission_status(response)
+        if status != last_status:
+            print(f"mission {mission_id}: {status}", flush=True)
+            last_status = status
+        if status in TERMINAL_STATUSES:
+            return status
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"mission did not finish before timeout: {mission_id}")
+        time.sleep(args.poll_period_sec)
+
+    raise RuntimeError("rclpy shutdown before mission finished")
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mission", type=Path, default=None, help="Mission JSON file to submit.")
+    parser.add_argument("--mission-id", default="", help="Override mission_id before submitting.")
+    parser.add_argument("--task-id", default="", help="Optional system/mission task_id.")
+    parser.add_argument("--agent-id", default="sim-nav2-demo-agent", help="Agent id used for mission ownership.")
+    parser.add_argument("--source", default="task_orchestrator_sim_nav2", help="Task source field.")
+    parser.add_argument("--priority", type=int, default=0, help="Mission priority.")
+    parser.add_argument("--correlation-id", default="", help="Optional correlation id.")
+    parser.add_argument("--metadata-json", default="{}", help="SubmitMissionV1 metadata_json field.")
+    parser.add_argument("--heartbeat-timeout-sec", type=float, default=600.0)
+    parser.add_argument("--lease-duration-sec", type=float, default=600.0)
+    parser.add_argument("--timeout-sec", type=float, default=0.0, help="Overall mission timeout passed to core.")
+    parser.add_argument("--queue-on-conflict", action="store_true", help="Queue mission when resource locks are busy.")
+    parser.add_argument("--no-wait", action="store_true", help="Return after submit instead of polling mission state.")
+    parser.add_argument("--poll-period-sec", type=float, default=1.0, help="Mission state polling period.")
+    parser.add_argument("--service-timeout-sec", type=float, default=10.0, help="Per-service wait/call timeout.")
+    parser.add_argument("--wait-timeout-sec", type=float, default=600.0, help="Maximum time to wait for completion.")
+    args = parser.parse_args()
+    if args.mission is None:
+        args.mission = _default_mission_path()
+    return args
+
+
+def main() -> int:
+    args = _parse_args()
+    mission_id, mission_json = _load_mission(args.mission, args.mission_id)
+
+    rclpy.init()
+    node = rclpy.create_node("submit_route_mission")
+    try:
+        _register_agent(node, args)
+        response = _submit_mission(node, args, mission_id, mission_json)
+        print(
+            "submitted "
+            f"mission_id={mission_id} task_id={response.task_id} "
+            f"lease_token={response.lease.lease_token}",
+            flush=True,
+        )
+        if args.no_wait:
+            return 0
+        status = _wait_for_mission(node, args, mission_id)
+        return 0 if status in {TaskStatusV1.DONE, TaskStatusV1.SKIPPED} else 2
+    except (RuntimeError, TimeoutError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

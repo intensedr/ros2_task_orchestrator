@@ -1,0 +1,42 @@
+parameters:
+  mission_id: sim-nav2-template-route
+  frame_id: map
+  first_x: 1.0
+  first_y: 0.0
+  second_x: 1.5
+  second_y: 1.0
+  timeout_sec: 120.0
+
+mission_id: "${mission_id}"
+subtasks:
+  - subtask_id: waypoint-1
+    task_name: navigation/navigate_to_pose
+    task_data_json:
+      pose:
+        header:
+          frame_id: "${frame_id}"
+        pose:
+          position:
+            x: "${first_x}"
+            y: "${first_y}"
+            z: 0.0
+          orientation:
+            w: 1.0
+      behavior_tree: ""
+    timeout_sec: "${timeout_sec}"
+  - subtask_id: waypoint-2
+    task_name: navigation/navigate_to_pose
+    depends_on: [waypoint-1]
+    task_data_json:
+      pose:
+        header:
+          frame_id: "${frame_id}"
+        pose:
+          position:
+            x: "${second_x}"
+            y: "${second_y}"
+            z: 0.0
+          orientation:
+            w: 1.0
+      behavior_tree: ""
+    timeout_sec: "${timeout_sec}"

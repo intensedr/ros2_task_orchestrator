@@ -15,16 +15,31 @@ from task_orchestrator_core.storage import SQLiteTaskStorage
 from task_orchestrator_core.system_tasks.wait import WaitTaskExecutor
 from task_orchestrator_core.task_models import TaskControlHook, TaskDefinition
 from task_orchestrator_msgs.action import ExecuteTaskV1
-from task_orchestrator_msgs.msg import ErrorCodeV1, TaskEventV1, TaskRecordV1, TaskResultV1, TaskStatusV1
+from task_orchestrator_msgs.msg import (
+    ErrorCodeV1,
+    MissionLeaseStatusV1,
+    TaskEventV1,
+    TaskRecordV1,
+    TaskResultV1,
+    TaskStatusV1,
+)
 from task_orchestrator_msgs.srv import (
+    CancelMissionV1,
     CancelTasksV1,
+    ClaimMissionV1,
+    GetMissionStateV1,
     GetTaskV1,
+    ListAgentsV1,
     ListEventsV1,
     ListTaskRecordsV1,
     ListTasksV1,
     PauseTasksV1,
+    RegisterAgentV1,
+    ReleaseMissionV1,
     ReloadConfigV1,
     ResumeTasksV1,
+    SubmitMissionV1,
+    ValidateMissionV1,
     StopTasksV1,
     ValidateTaskV1,
 )
@@ -154,6 +169,21 @@ def test_sqlite_storage_is_disabled_by_default(tmp_path):
     node = _make_node(tmp_path)
     try:
         assert node._storage is None
+    finally:
+        _destroy_node(node)
+
+
+def test_admission_capability_tags_accept_string_array_override(tmp_path):
+    node = _make_node(
+        tmp_path,
+        parameter_overrides=[
+            Parameter("admission.available_capability_tags", value=["localization", "motion"]),
+        ],
+    )
+    try:
+        snapshot = node._admission_snapshot()
+
+        assert snapshot.available_capability_tags == ("localization", "motion")
     finally:
         _destroy_node(node)
 
@@ -870,6 +900,207 @@ subtasks:
         assert response.valid is True
         assert normalized["mission_id"] == "mission-from-template"
         assert normalized["subtasks"][0]["task_name"] == "system/wait"
+    finally:
+        _destroy_node(node)
+
+
+def test_register_agent_and_list_agents_services(tmp_path):
+    node = _make_node(tmp_path)
+    try:
+        register_request = RegisterAgentV1.Request()
+        register_response = RegisterAgentV1.Response()
+        register_request.agent_id = "agent-1"
+        register_request.display_name = "Planner"
+        register_request.agent_type = "planner"
+        register_request.capabilities = ["mission.compose"]
+        register_request.metadata_json = '{"runtime": "external"}'
+
+        register_response = node._register_agent(register_request, register_response)
+
+        list_request = ListAgentsV1.Request()
+        list_response = ListAgentsV1.Response()
+        list_response = node._list_agents(list_request, list_response)
+
+        assert register_response.success is True
+        assert register_response.agent.agent_id == "agent-1"
+        assert register_response.agent.metadata_json == '{"runtime": "external"}'
+        assert [agent.agent_id for agent in list_response.agents] == ["agent-1"]
+        assert list_response.agents[0].current_mission_id == ""
+    finally:
+        _destroy_node(node)
+
+
+def test_claim_and_release_mission_services_enforce_lease_token(tmp_path):
+    node = _make_node(tmp_path)
+    try:
+        register_request = RegisterAgentV1.Request()
+        register_request.agent_id = "agent-1"
+        node._register_agent(register_request, RegisterAgentV1.Response())
+
+        claim_request = ClaimMissionV1.Request()
+        claim_response = ClaimMissionV1.Response()
+        claim_request.agent_id = "agent-1"
+        claim_request.mission_id = "mission-1"
+        claim_response = node._claim_mission(claim_request, claim_response)
+
+        bad_release_request = ReleaseMissionV1.Request()
+        bad_release_response = ReleaseMissionV1.Response()
+        bad_release_request.agent_id = "agent-1"
+        bad_release_request.mission_id = "mission-1"
+        bad_release_request.lease_token = "wrong"
+        bad_release_response = node._release_mission(bad_release_request, bad_release_response)
+
+        release_request = ReleaseMissionV1.Request()
+        release_response = ReleaseMissionV1.Response()
+        release_request.agent_id = "agent-1"
+        release_request.mission_id = "mission-1"
+        release_request.lease_token = claim_response.lease.lease_token
+        release_response = node._release_mission(release_request, release_response)
+
+        assert claim_response.success is True
+        assert claim_response.lease.lease_status == MissionLeaseStatusV1.ACTIVE
+        assert bad_release_response.success is False
+        assert bad_release_response.error_code == ErrorCodeV1.POLICY_REJECTED
+        assert release_response.success is True
+        assert release_response.lease.lease_status == MissionLeaseStatusV1.RELEASED
+    finally:
+        _destroy_node(node)
+
+
+def test_validate_mission_service_validates_subtask_payloads(tmp_path):
+    node = _make_node(tmp_path)
+    try:
+        register_request = RegisterAgentV1.Request()
+        register_request.agent_id = "agent-1"
+        node._register_agent(register_request, RegisterAgentV1.Response())
+
+        valid_request = ValidateMissionV1.Request()
+        valid_response = ValidateMissionV1.Response()
+        valid_request.agent_id = "agent-1"
+        valid_request.mission_id = "mission-1"
+        valid_request.mission_json = json.dumps(
+            {
+                "mission_id": "mission-1",
+                "subtasks": [
+                    {
+                        "subtask_id": "wait",
+                        "task_name": "system/wait",
+                        "task_data_json": {"duration_sec": 0},
+                    }
+                ],
+            }
+        )
+        valid_response = node._validate_mission(valid_request, valid_response)
+
+        invalid_request = ValidateMissionV1.Request()
+        invalid_response = ValidateMissionV1.Response()
+        invalid_request.agent_id = "agent-1"
+        invalid_request.mission_id = "mission-2"
+        invalid_request.mission_json = json.dumps(
+            {
+                "mission_id": "mission-2",
+                "subtasks": [
+                    {
+                        "subtask_id": "missing",
+                        "task_name": "missing/task",
+                    }
+                ],
+            }
+        )
+        invalid_response = node._validate_mission(invalid_request, invalid_response)
+
+        assert valid_response.valid is True
+        assert json.loads(valid_response.normalized_mission_json)["mission_id"] == "mission-1"
+        assert invalid_response.valid is False
+        assert invalid_response.error_code == ErrorCodeV1.UNKNOWN_TASK
+    finally:
+        _destroy_node(node)
+
+
+def test_submit_mission_service_runs_existing_system_mission_and_reports_state(tmp_path):
+    node = _make_node(tmp_path)
+    try:
+        register_request = RegisterAgentV1.Request()
+        register_request.agent_id = "agent-1"
+        node._register_agent(register_request, RegisterAgentV1.Response())
+
+        submit_request = SubmitMissionV1.Request()
+        submit_response = SubmitMissionV1.Response()
+        submit_request.agent_id = "agent-1"
+        submit_request.mission_id = "mission-1"
+        submit_request.task_id = "mission-task-1"
+        submit_request.mission_json = '{"mission_id": "mission-1", "subtasks": []}'
+        submit_response = node._submit_mission(submit_request, submit_response)
+
+        state_request = GetMissionStateV1.Request()
+        state_response = GetMissionStateV1.Response()
+        state_request.agent_id = "agent-1"
+        state_request.mission_id = "mission-1"
+        for _ in range(40):
+            state_response = node._get_mission_state(state_request, GetMissionStateV1.Response())
+            if state_response.found and state_response.task.result.status == TaskStatusV1.DONE:
+                break
+            time.sleep(0.05)
+
+        assert submit_response.success is True
+        assert submit_response.task_id == "mission-task-1"
+        assert submit_response.lease.lease_status == MissionLeaseStatusV1.ACTIVE
+        assert state_response.found is True
+        assert state_response.task.result.task_id == "mission-task-1"
+        assert state_response.task.result.status == TaskStatusV1.DONE
+        assert state_response.lease.task_id == "mission-task-1"
+    finally:
+        _destroy_node(node)
+
+
+def test_cancel_mission_service_requires_matching_lease_and_cancels_task(tmp_path):
+    node = _make_node(tmp_path)
+    canceled = []
+    try:
+        register_request = RegisterAgentV1.Request()
+        register_request.agent_id = "agent-1"
+        node._register_agent(register_request, RegisterAgentV1.Response())
+
+        claim_request = ClaimMissionV1.Request()
+        claim_request.agent_id = "agent-1"
+        claim_request.mission_id = "mission-1"
+        claim_response = node._claim_mission(claim_request, ClaimMissionV1.Response())
+        node._remember_mission_task_id("mission-1", "mission-task-1")
+        node._agent_registry.set_mission_task_id("mission-1", "mission-task-1")
+        node._active_tasks.add(
+            ActiveTaskEntry(
+                api_version="v1",
+                task_id="mission-task-1",
+                task_name="system/mission",
+                source="agent-1",
+                correlation_id="corr-1",
+                priority=0,
+                status=TaskStatusV1.IN_PROGRESS,
+                created_at=node.get_clock().now().to_msg(),
+                started_at=node.get_clock().now().to_msg(),
+                tags=(),
+                task_server_type="system/mission",
+                cancel_callback=lambda: not canceled.append("mission-task-1"),
+            )
+        )
+
+        bad_request = CancelMissionV1.Request()
+        bad_request.agent_id = "agent-1"
+        bad_request.mission_id = "mission-1"
+        bad_request.lease_token = "wrong"
+        bad_response = node._cancel_mission_service_cb(bad_request, CancelMissionV1.Response())
+
+        cancel_request = CancelMissionV1.Request()
+        cancel_request.agent_id = "agent-1"
+        cancel_request.mission_id = "mission-1"
+        cancel_request.lease_token = claim_response.lease.lease_token
+        cancel_response = node._cancel_mission_service_cb(cancel_request, CancelMissionV1.Response())
+
+        assert bad_response.success is False
+        assert bad_response.error_code == ErrorCodeV1.POLICY_REJECTED
+        assert cancel_response.success is True
+        assert cancel_response.canceled_task_ids == ["mission-task-1"]
+        assert canceled == ["mission-task-1"]
     finally:
         _destroy_node(node)
 

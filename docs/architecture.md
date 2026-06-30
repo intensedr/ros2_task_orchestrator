@@ -8,6 +8,7 @@ contracts and examples.
 - `task_orchestrator_msgs`: public action, service and message contracts.
 - `task_orchestrator_core`: core node, task registry and task lifecycle logic.
 - `task_orchestrator_examples`: example configs and launch files.
+- `task_orchestrator_sim_nav2`: optional Nav2 TurtleBot simulation scenarios.
 
 ## Core Boundary
 
@@ -15,6 +16,8 @@ The core owns:
 
 - task lifecycle
 - task execution through existing ROS2 actions and services
+- agent registration and heartbeat state
+- mission ownership leases and lease-token checks
 - active task state
 - terminal results
 - feedback
@@ -23,6 +26,8 @@ The core owns:
 The core does not own:
 
 - cloud routing
+- agent runtimes or planner loops
+- optional human approval workflows
 - tenant authorization
 - product-specific mission formats
 - UI state
@@ -63,6 +68,14 @@ Mission payloads can reference YAML/JSON templates through `template_path` or
 `template_id`. Templates are resolved before the normal mission parser, so
 templated missions use the same validation, execution, progress and result
 contracts as explicit mission JSON.
+
+Mission-operating agents interact with the core through explicit public
+services. `RegisterAgentV1` records heartbeat state, mission ownership is
+guarded by lease tokens, and stale-agent or expired leases can be reclaimed by
+another live agent. Agent-submitted mission JSON is normalized, graph-validated
+and checked against configured subtask parsers before execution. The core does
+not embed planner loops, model calls or approval workflows; those systems
+produce or approve structured mission JSON before calling the core.
 
 Observability is ROS2-native and dependency-free by default: task events include
 structured `data_json`, all tasks publish start and terminal feedback, and task

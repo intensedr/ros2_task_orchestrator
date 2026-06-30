@@ -1,0 +1,10 @@
+string landing_zone_id
+float64 duration_sec
+---
+bool success
+string error_message
+float64 final_altitude
+---
+float64 current_altitude
+float64 progress
+string state

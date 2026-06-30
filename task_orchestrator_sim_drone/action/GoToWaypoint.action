@@ -1,0 +1,12 @@
+geometry_msgs/PoseStamped target_pose
+float64 speed_mps
+string zone_id
+---
+bool success
+string error_message
+geometry_msgs/PoseStamped final_pose
+---
+geometry_msgs/PoseStamped current_pose
+float64 distance_remaining
+float64 progress
+string state

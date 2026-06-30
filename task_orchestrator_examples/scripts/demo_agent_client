@@ -1,0 +1,550 @@
+#!/usr/bin/env python3
+"""External mission agent example for the task orchestrator public API."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+from ament_index_python.packages import get_package_share_directory
+import rclpy
+from rclpy.node import Node
+
+from task_orchestrator_core.constants import (
+    SERVICE_CANCEL_MISSION,
+    SERVICE_CLAIM_MISSION,
+    SERVICE_GET_MISSION_STATE,
+    SERVICE_LIST_AGENTS,
+    SERVICE_PAUSE_MISSION,
+    SERVICE_REGISTER_AGENT,
+    SERVICE_RELEASE_MISSION,
+    SERVICE_RESUME_MISSION,
+    SERVICE_RETRY_MISSION,
+    SERVICE_SUBMIT_MISSION,
+    SERVICE_VALIDATE_MISSION,
+)
+from task_orchestrator_msgs.msg import TaskStatusV1
+from task_orchestrator_msgs.srv import (
+    CancelMissionV1,
+    ClaimMissionV1,
+    GetMissionStateV1,
+    ListAgentsV1,
+    PauseMissionV1,
+    RegisterAgentV1,
+    ReleaseMissionV1,
+    ResumeMissionV1,
+    RetryMissionV1,
+    SubmitMissionV1,
+    ValidateMissionV1,
+)
+
+
+TERMINAL_STATUSES = {
+    TaskStatusV1.DONE,
+    TaskStatusV1.ERROR,
+    TaskStatusV1.CANCELED,
+    TaskStatusV1.SKIPPED,
+    TaskStatusV1.REJECTED,
+}
+
+
+def _default_mission_path() -> Path:
+    package_share = get_package_share_directory("task_orchestrator_examples")
+    return Path(package_share) / "missions" / "agent_wait_mission.json"
+
+
+def _load_mission(path: Path, mission_id: str) -> tuple[str, str]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("mission JSON must decode to an object")
+
+    base_mission_id = str(payload.get("mission_id") or "agent-demo-mission")
+    resolved_mission_id = mission_id or f"{base_mission_id}-{uuid.uuid4().hex[:8]}"
+    payload["mission_id"] = resolved_mission_id
+    mission_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    return resolved_mission_id, mission_json
+
+
+def _csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _wait_for_service(node: Node, client: Any, service_name: str, timeout_sec: float) -> None:
+    deadline = time.monotonic() + timeout_sec
+    while rclpy.ok():
+        if client.wait_for_service(timeout_sec=0.25):
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"service is not available: {service_name}")
+
+
+def _call(node: Node, client: Any, request: Any, timeout_sec: float) -> Any:
+    future = client.call_async(request)
+    deadline = time.monotonic() + timeout_sec
+    while rclpy.ok() and not future.done():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("service call timed out")
+        rclpy.spin_once(node, timeout_sec=min(0.1, remaining))
+    if future.exception() is not None:
+        raise RuntimeError(f"service call failed: {future.exception()}")
+    return future.result()
+
+
+def _client(node: Node, service_type: Any, service_name: str, timeout_sec: float) -> Any:
+    client = node.create_client(service_type, service_name)
+    _wait_for_service(node, client, service_name, timeout_sec)
+    return client
+
+
+def _register_agent(node: Node, args: argparse.Namespace) -> RegisterAgentV1.Response:
+    client = _client(node, RegisterAgentV1, SERVICE_REGISTER_AGENT, args.service_timeout_sec)
+    request = RegisterAgentV1.Request()
+    request.agent_id = args.agent_id
+    request.display_name = args.display_name
+    request.agent_type = args.agent_type
+    request.capabilities = _csv(args.capabilities)
+    request.heartbeat_timeout_sec = args.heartbeat_timeout_sec
+    request.metadata_json = args.agent_metadata_json
+
+    response = _call(node, client, request, args.service_timeout_sec)
+    if not response.success:
+        raise RuntimeError(f"register_agent failed: {response.error_code} {response.error_message}")
+    return response
+
+
+def _list_agents(node: Node, args: argparse.Namespace) -> ListAgentsV1.Response:
+    client = _client(node, ListAgentsV1, SERVICE_LIST_AGENTS, args.service_timeout_sec)
+    request = ListAgentsV1.Request()
+    request.agent_id = args.agent_filter
+    request.include_stale = args.include_stale
+    return _call(node, client, request, args.service_timeout_sec)
+
+
+def _validate_mission(
+    node: Node,
+    args: argparse.Namespace,
+    mission_id: str,
+    mission_json: str,
+) -> ValidateMissionV1.Response:
+    client = _client(node, ValidateMissionV1, SERVICE_VALIDATE_MISSION, args.service_timeout_sec)
+    request = ValidateMissionV1.Request()
+    request.agent_id = args.agent_id
+    request.mission_id = mission_id
+    request.mission_json = mission_json
+    request.include_schema = args.include_schema
+
+    response = _call(node, client, request, args.service_timeout_sec)
+    if not response.valid:
+        raise RuntimeError(f"validate_mission failed: {response.error_code} {response.error_message}")
+    return response
+
+
+def _claim_mission(node: Node, args: argparse.Namespace, mission_id: str) -> ClaimMissionV1.Response:
+    client = _client(node, ClaimMissionV1, SERVICE_CLAIM_MISSION, args.service_timeout_sec)
+    request = ClaimMissionV1.Request()
+    request.agent_id = args.agent_id
+    request.mission_id = mission_id
+    request.lease_duration_sec = args.lease_duration_sec
+    request.lease_token = args.lease_token
+    request.force = args.force
+    request.metadata_json = args.lease_metadata_json
+
+    response = _call(node, client, request, args.service_timeout_sec)
+    if not response.success:
+        raise RuntimeError(f"claim_mission failed: {response.error_code} {response.error_message}")
+    return response
+
+
+def _submit_mission(
+    node: Node,
+    args: argparse.Namespace,
+    mission_id: str,
+    mission_json: str,
+    lease_token: str,
+) -> SubmitMissionV1.Response:
+    client = _client(node, SubmitMissionV1, SERVICE_SUBMIT_MISSION, args.service_timeout_sec)
+    request = SubmitMissionV1.Request()
+    request.agent_id = args.agent_id
+    request.mission_id = mission_id
+    request.task_id = args.task_id
+    request.mission_json = mission_json
+    request.lease_token = lease_token
+    request.lease_duration_sec = args.lease_duration_sec
+    request.source = args.source
+    request.priority = args.priority
+    request.correlation_id = args.correlation_id or mission_id
+    request.tags = _csv(args.tags)
+    request.timeout_sec = args.timeout_sec
+    request.queue_on_conflict = args.queue_on_conflict
+    request.idempotency_key = args.idempotency_key
+    request.metadata_json = args.metadata_json
+
+    response = _call(node, client, request, args.service_timeout_sec)
+    if not response.success:
+        raise RuntimeError(f"submit_mission failed: {response.error_code} {response.error_message}")
+    return response
+
+
+def _get_state(node: Node, args: argparse.Namespace, mission_id: str) -> GetMissionStateV1.Response:
+    client = _client(node, GetMissionStateV1, SERVICE_GET_MISSION_STATE, args.service_timeout_sec)
+    request = GetMissionStateV1.Request()
+    request.agent_id = args.agent_id
+    request.mission_id = mission_id
+
+    response = _call(node, client, request, args.service_timeout_sec)
+    if not response.found:
+        raise RuntimeError(f"get_mission_state failed: {response.error_code} {response.error_message}")
+    return response
+
+
+def _release_mission(
+    node: Node,
+    args: argparse.Namespace,
+    mission_id: str,
+    lease_token: str,
+) -> ReleaseMissionV1.Response:
+    client = _client(node, ReleaseMissionV1, SERVICE_RELEASE_MISSION, args.service_timeout_sec)
+    request = ReleaseMissionV1.Request()
+    request.agent_id = args.agent_id
+    request.mission_id = mission_id
+    request.lease_token = lease_token
+
+    response = _call(node, client, request, args.service_timeout_sec)
+    if not response.success:
+        raise RuntimeError(f"release_mission failed: {response.error_code} {response.error_message}")
+    return response
+
+
+def _mission_command(
+    node: Node,
+    args: argparse.Namespace,
+    service_type: Any,
+    service_name: str,
+    command_name: str,
+) -> Any:
+    client = _client(node, service_type, service_name, args.service_timeout_sec)
+    request = service_type.Request()
+    request.agent_id = args.agent_id
+    request.mission_id = args.mission_id
+    request.lease_token = args.lease_token
+    request.source = args.source
+    request.correlation_id = args.correlation_id or args.mission_id
+
+    response = _call(node, client, request, args.service_timeout_sec)
+    if not response.success:
+        raise RuntimeError(f"{command_name} failed: {response.error_code} {response.error_message}")
+    return response
+
+
+def _retry_mission(node: Node, args: argparse.Namespace) -> RetryMissionV1.Response:
+    client = _client(node, RetryMissionV1, SERVICE_RETRY_MISSION, args.service_timeout_sec)
+    request = RetryMissionV1.Request()
+    request.agent_id = args.agent_id
+    request.mission_id = args.mission_id
+    request.lease_token = args.lease_token
+    request.task_id = args.task_id
+    request.source = args.source
+    request.correlation_id = args.correlation_id or args.mission_id
+    request.idempotency_key = args.idempotency_key
+
+    response = _call(node, client, request, args.service_timeout_sec)
+    if not response.success:
+        raise RuntimeError(f"retry_mission failed: {response.error_code} {response.error_message}")
+    return response
+
+
+def _mission_status(response: GetMissionStateV1.Response) -> str:
+    status = response.task.result.status or response.task.status
+    return status or "UNKNOWN"
+
+
+def _wait_for_mission(
+    node: Node,
+    args: argparse.Namespace,
+    mission_id: str,
+    lease_token: str,
+) -> str:
+    deadline = time.monotonic() + args.wait_timeout_sec
+    next_heartbeat_at = time.monotonic()
+    last_status = ""
+
+    while rclpy.ok():
+        now = time.monotonic()
+        if now >= next_heartbeat_at:
+            _register_agent(node, args)
+            next_heartbeat_at = now + args.heartbeat_period_sec
+
+        response = _get_state(node, args, mission_id)
+        status = _mission_status(response)
+        if status != last_status:
+            print(
+                "state "
+                f"mission_id={mission_id} status={status} "
+                f"lease_status={response.lease.lease_status}",
+                flush=True,
+            )
+            last_status = status
+        if status in TERMINAL_STATUSES:
+            return status
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"mission did not finish before timeout: {mission_id}")
+        time.sleep(args.poll_period_sec)
+
+    raise RuntimeError("rclpy shutdown before mission finished")
+
+
+def _print_agent(response: RegisterAgentV1.Response) -> None:
+    print(
+        "registered "
+        f"agent_id={response.agent.agent_id} "
+        f"heartbeat_status={response.agent.heartbeat_status}",
+        flush=True,
+    )
+
+
+def _print_lease(prefix: str, lease: Any) -> None:
+    print(
+        f"{prefix} "
+        f"mission_id={lease.mission_id} "
+        f"agent_id={lease.agent_id} "
+        f"lease_status={lease.lease_status} "
+        f"lease_token={lease.lease_token}",
+        flush=True,
+    )
+
+
+def _run(node: Node, args: argparse.Namespace) -> int:
+    mission_id, mission_json = _load_mission(args.mission, args.mission_id)
+    _print_agent(_register_agent(node, args))
+
+    validate_response = _validate_mission(node, args, mission_id, mission_json)
+    print(f"validated mission_id={mission_id} valid={validate_response.valid}", flush=True)
+
+    claim_response = _claim_mission(node, args, mission_id)
+    lease_token = claim_response.lease.lease_token
+    _print_lease("claimed", claim_response.lease)
+
+    submit_response = _submit_mission(node, args, mission_id, mission_json, lease_token)
+    print(
+        "submitted "
+        f"mission_id={mission_id} task_id={submit_response.task_id} "
+        f"lease_token={submit_response.lease.lease_token}",
+        flush=True,
+    )
+
+    if args.no_wait:
+        return 0
+
+    status = _wait_for_mission(node, args, mission_id, lease_token)
+    if args.release:
+        release_response = _release_mission(node, args, mission_id, lease_token)
+        _print_lease("released", release_response.lease)
+    return 0 if status in {TaskStatusV1.DONE, TaskStatusV1.SKIPPED} else 2
+
+
+def _add_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--agent-id", default="demo-agent", help="Public agent id.")
+    parser.add_argument("--display-name", default="Demo mission agent")
+    parser.add_argument("--agent-type", default="example")
+    parser.add_argument("--capabilities", default="examples,mission")
+    parser.add_argument("--agent-metadata-json", default='{"example":"demo_agent_client"}')
+    parser.add_argument("--heartbeat-timeout-sec", type=float, default=60.0)
+    parser.add_argument("--service-timeout-sec", type=float, default=10.0)
+
+
+def _add_mission_input(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mission", type=Path, default=None, help="Mission JSON file.")
+    parser.add_argument("--mission-id", default="", help="Override mission_id before calling the API.")
+
+
+def _add_submit_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--task-id", default="", help="Optional mission task id.")
+    parser.add_argument("--source", default="demo_agent_client")
+    parser.add_argument("--priority", type=int, default=0)
+    parser.add_argument("--correlation-id", default="")
+    parser.add_argument("--tags", default="example,agent")
+    parser.add_argument("--timeout-sec", type=float, default=0.0)
+    parser.add_argument("--queue-on-conflict", action="store_true")
+    parser.add_argument("--idempotency-key", default="")
+    parser.add_argument("--metadata-json", default="{}")
+
+
+def _add_lease_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--lease-token", default="")
+    parser.add_argument("--lease-duration-sec", type=float, default=120.0)
+    parser.add_argument("--lease-metadata-json", default='{"example":"demo_agent_client"}')
+    parser.add_argument("--force", action="store_true")
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run_parser = subparsers.add_parser("run", help="Register, validate, claim, submit, poll and release.")
+    _add_common(run_parser)
+    _add_mission_input(run_parser)
+    _add_submit_options(run_parser)
+    _add_lease_options(run_parser)
+    run_parser.add_argument("--include-schema", action="store_true")
+    run_parser.add_argument("--no-wait", action="store_true")
+    run_parser.add_argument("--release", action=argparse.BooleanOptionalAction, default=True)
+    run_parser.add_argument("--poll-period-sec", type=float, default=1.0)
+    run_parser.add_argument("--heartbeat-period-sec", type=float, default=10.0)
+    run_parser.add_argument("--wait-timeout-sec", type=float, default=300.0)
+
+    register_parser = subparsers.add_parser("register", help="Register or heartbeat an agent.")
+    _add_common(register_parser)
+
+    heartbeat_parser = subparsers.add_parser("heartbeat", help="Send register_agent heartbeats forever.")
+    _add_common(heartbeat_parser)
+    heartbeat_parser.add_argument("--period-sec", type=float, default=10.0)
+
+    list_parser = subparsers.add_parser("list", help="List registered agents.")
+    _add_common(list_parser)
+    list_parser.add_argument("--agent-filter", default="")
+    list_parser.add_argument("--include-stale", action="store_true")
+
+    validate_parser = subparsers.add_parser("validate", help="Validate mission JSON.")
+    _add_common(validate_parser)
+    _add_mission_input(validate_parser)
+    validate_parser.add_argument("--include-schema", action="store_true")
+
+    claim_parser = subparsers.add_parser("claim", help="Claim a mission lease.")
+    _add_common(claim_parser)
+    _add_lease_options(claim_parser)
+    claim_parser.add_argument("--mission-id", required=True)
+
+    submit_parser = subparsers.add_parser("submit", help="Submit mission JSON with an optional lease token.")
+    _add_common(submit_parser)
+    _add_mission_input(submit_parser)
+    _add_submit_options(submit_parser)
+    _add_lease_options(submit_parser)
+
+    state_parser = subparsers.add_parser("state", help="Read mission state.")
+    _add_common(state_parser)
+    state_parser.add_argument("--mission-id", required=True)
+
+    release_parser = subparsers.add_parser("release", help="Release a mission lease.")
+    _add_common(release_parser)
+    release_parser.add_argument("--mission-id", required=True)
+    release_parser.add_argument("--lease-token", required=True)
+
+    for name in ("cancel", "pause", "resume"):
+        command_parser = subparsers.add_parser(name, help=f"{name} a leased mission.")
+        _add_common(command_parser)
+        command_parser.add_argument("--mission-id", required=True)
+        command_parser.add_argument("--lease-token", required=True)
+        command_parser.add_argument("--source", default="demo_agent_client")
+        command_parser.add_argument("--correlation-id", default="")
+
+    retry_parser = subparsers.add_parser("retry", help="Retry a terminal leased mission.")
+    _add_common(retry_parser)
+    retry_parser.add_argument("--mission-id", required=True)
+    retry_parser.add_argument("--lease-token", required=True)
+    retry_parser.add_argument("--task-id", default="")
+    retry_parser.add_argument("--source", default="demo_agent_client")
+    retry_parser.add_argument("--correlation-id", default="")
+    retry_parser.add_argument("--idempotency-key", default="")
+
+    args = parser.parse_args()
+    if hasattr(args, "mission") and args.mission is None:
+        args.mission = _default_mission_path()
+    return args
+
+
+def main() -> int:
+    args = _parse_args()
+    rclpy.init()
+    node = rclpy.create_node("demo_agent_client")
+    try:
+        if args.command == "run":
+            return _run(node, args)
+        if args.command == "register":
+            _print_agent(_register_agent(node, args))
+            return 0
+        if args.command == "heartbeat":
+            while rclpy.ok():
+                _print_agent(_register_agent(node, args))
+                time.sleep(args.period_sec)
+            return 0
+        if args.command == "list":
+            response = _list_agents(node, args)
+            for agent in response.agents:
+                print(
+                    "agent "
+                    f"agent_id={agent.agent_id} "
+                    f"status={agent.heartbeat_status} "
+                    f"capabilities={','.join(agent.capabilities)}",
+                    flush=True,
+                )
+            return 0
+        if args.command == "validate":
+            mission_id, mission_json = _load_mission(args.mission, args.mission_id)
+            response = _validate_mission(node, args, mission_id, mission_json)
+            print(f"validated mission_id={mission_id} valid={response.valid}", flush=True)
+            return 0
+        if args.command == "claim":
+            _print_lease("claimed", _claim_mission(node, args, args.mission_id).lease)
+            return 0
+        if args.command == "submit":
+            mission_id, mission_json = _load_mission(args.mission, args.mission_id)
+            response = _submit_mission(node, args, mission_id, mission_json, args.lease_token)
+            _print_lease("submitted", response.lease)
+            print(f"task_id={response.task_id}", flush=True)
+            return 0
+        if args.command == "state":
+            response = _get_state(node, args, args.mission_id)
+            print(
+                "state "
+                f"mission_id={args.mission_id} "
+                f"status={_mission_status(response)} "
+                f"lease_status={response.lease.lease_status}",
+                flush=True,
+            )
+            return 0
+        if args.command == "release":
+            response = _release_mission(node, args, args.mission_id, args.lease_token)
+            _print_lease("released", response.lease)
+            return 0
+        if args.command == "cancel":
+            response = _mission_command(
+                node,
+                args,
+                CancelMissionV1,
+                SERVICE_CANCEL_MISSION,
+                "cancel_mission",
+            )
+            print(f"canceled task_ids={','.join(response.canceled_task_ids)}", flush=True)
+            return 0
+        if args.command == "pause":
+            response = _mission_command(node, args, PauseMissionV1, SERVICE_PAUSE_MISSION, "pause_mission")
+            print(f"paused task_ids={','.join(response.paused_task_ids)}", flush=True)
+            return 0
+        if args.command == "resume":
+            response = _mission_command(node, args, ResumeMissionV1, SERVICE_RESUME_MISSION, "resume_mission")
+            print(f"resumed task_ids={','.join(response.resumed_task_ids)}", flush=True)
+            return 0
+        if args.command == "retry":
+            response = _retry_mission(node, args)
+            _print_lease("retried", response.lease)
+            print(f"task_id={response.task_id}", flush=True)
+            return 0
+        raise RuntimeError(f"unknown command: {args.command}")
+    except KeyboardInterrupt:
+        return 130
+    except (RuntimeError, TimeoutError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

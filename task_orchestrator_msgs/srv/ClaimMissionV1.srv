@@ -1,0 +1,11 @@
+string agent_id
+string mission_id
+float64 lease_duration_sec
+string lease_token
+bool force
+string metadata_json
+---
+bool success
+string error_code
+string error_message
+MissionLeaseV1 lease

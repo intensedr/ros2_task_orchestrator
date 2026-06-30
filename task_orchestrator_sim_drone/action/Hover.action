@@ -1,0 +1,9 @@
+float64 duration_sec
+---
+bool success
+string error_message
+float64 elapsed_sec
+---
+float64 elapsed_sec
+float64 progress
+string state

@@ -9,6 +9,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from builtin_interfaces.msg import Time
+from rcl_interfaces.msg import ParameterDescriptor
 import rclpy
 import yaml
 from rclpy.action import ActionServer, CancelResponse
@@ -19,6 +21,12 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from rosidl_runtime_py.utilities import get_action, get_service
 
 from task_orchestrator_core.active_tasks import ActiveTaskEntry, ActiveTaskRegistry, DuplicateActiveTaskError
+from task_orchestrator_core.agent_registry import (
+    AgentRegistration,
+    AgentRegistry,
+    AgentRegistryError,
+    MissionLease,
+)
 from task_orchestrator_core.clients.action_task import (
     ActionTaskCanceled,
     ActionTaskClient,
@@ -41,11 +49,22 @@ from task_orchestrator_core.constants import (
     ACTION_EXECUTE_TASK,
     API_VERSION,
     NODE_NAME,
+    SERVICE_CANCEL_MISSION,
     SERVICE_CANCEL_TASKS,
+    SERVICE_CLAIM_MISSION,
+    SERVICE_GET_MISSION_STATE,
     SERVICE_GET_TASK,
+    SERVICE_LIST_AGENTS,
     SERVICE_LIST_TASKS,
     SERVICE_PAUSE_TASKS,
+    SERVICE_PAUSE_MISSION,
+    SERVICE_REGISTER_AGENT,
+    SERVICE_RELEASE_MISSION,
     SERVICE_RESUME_TASKS,
+    SERVICE_RESUME_MISSION,
+    SERVICE_RETRY_MISSION,
+    SERVICE_SUBMIT_MISSION,
+    SERVICE_VALIDATE_MISSION,
     SERVICE_VALIDATE_TASK,
     TOPIC_ACTIVE_TASKS,
     TOPIC_EVENTS,
@@ -77,7 +96,11 @@ from task_orchestrator_msgs.action import ExecuteTaskV1
 from task_orchestrator_msgs.msg import (
     ActiveTaskArrayV1,
     ActiveTaskV1,
+    AgentRecordV1,
+    AgentStatusV1,
     ErrorCodeV1,
+    MissionLeaseStatusV1,
+    MissionLeaseV1,
     TaskEventV1,
     TaskFeedbackV1,
     TaskRecordV1,
@@ -86,15 +109,26 @@ from task_orchestrator_msgs.msg import (
     TaskStatusV1,
 )
 from task_orchestrator_msgs.srv import (
+    CancelMissionV1,
     CancelTasksV1,
+    ClaimMissionV1,
+    GetMissionStateV1,
     GetTaskV1,
+    ListAgentsV1,
     ListEventsV1,
     ListTaskRecordsV1,
     ListTasksV1,
+    PauseMissionV1,
     PauseTasksV1,
     ReloadConfigV1,
+    RegisterAgentV1,
+    ReleaseMissionV1,
+    ResumeMissionV1,
     ResumeTasksV1,
+    RetryMissionV1,
     StopTasksV1,
+    SubmitMissionV1,
+    ValidateMissionV1,
     ValidateTaskV1,
 )
 
@@ -161,7 +195,13 @@ class TaskOrchestratorNode(Node):
         self.declare_parameter("admission.robot_mode", "")
         self.declare_parameter("admission.localization_ok", True)
         self.declare_parameter("admission.emergency_stop_active", False)
-        self.declare_parameter("admission.available_capability_tags", [])
+        self.declare_parameter(
+            "admission.available_capability_tags",
+            [],
+            descriptor=ParameterDescriptor(dynamic_typing=True),
+        )
+        self.declare_parameter("agents.default_heartbeat_timeout_sec", 30.0)
+        self.declare_parameter("missions.default_lease_duration_sec", 120.0)
         self.declare_parameter("storage.enabled", False)
         self.declare_parameter("storage.sqlite_path", "")
         self.declare_parameter("storage.retention_days", 30)
@@ -183,6 +223,11 @@ class TaskOrchestratorNode(Node):
         self._storage = self._make_storage()
         self._control_task = ControlTaskParser()
         self._mission_task = MissionTaskParser()
+        self._agent_registry = AgentRegistry(
+            default_heartbeat_timeout_sec=float(self.get_parameter("agents.default_heartbeat_timeout_sec").value),
+            default_lease_duration_sec=float(self.get_parameter("missions.default_lease_duration_sec").value),
+        )
+        self._mission_task_ids: dict[str, str] = {}
         self._policy_engine = TaskPolicyEngine()
         self._event_hooks: list[TaskEventHook] = []
         self._wait_task = WaitTaskExecutor()
@@ -263,6 +308,72 @@ class TaskOrchestratorNode(Node):
             ResumeTasksV1,
             SERVICE_RESUME_TASKS,
             self._resume_tasks,
+            callback_group=self._callback_group,
+        )
+        self._register_agent_service = self.create_service(
+            RegisterAgentV1,
+            SERVICE_REGISTER_AGENT,
+            self._register_agent,
+            callback_group=self._callback_group,
+        )
+        self._list_agents_service = self.create_service(
+            ListAgentsV1,
+            SERVICE_LIST_AGENTS,
+            self._list_agents,
+            callback_group=self._callback_group,
+        )
+        self._claim_mission_service = self.create_service(
+            ClaimMissionV1,
+            SERVICE_CLAIM_MISSION,
+            self._claim_mission,
+            callback_group=self._callback_group,
+        )
+        self._release_mission_service = self.create_service(
+            ReleaseMissionV1,
+            SERVICE_RELEASE_MISSION,
+            self._release_mission,
+            callback_group=self._callback_group,
+        )
+        self._validate_mission_service = self.create_service(
+            ValidateMissionV1,
+            SERVICE_VALIDATE_MISSION,
+            self._validate_mission,
+            callback_group=self._callback_group,
+        )
+        self._submit_mission_service = self.create_service(
+            SubmitMissionV1,
+            SERVICE_SUBMIT_MISSION,
+            self._submit_mission,
+            callback_group=self._callback_group,
+        )
+        self._cancel_mission_service = self.create_service(
+            CancelMissionV1,
+            SERVICE_CANCEL_MISSION,
+            self._cancel_mission_service_cb,
+            callback_group=self._callback_group,
+        )
+        self._pause_mission_service = self.create_service(
+            PauseMissionV1,
+            SERVICE_PAUSE_MISSION,
+            self._pause_mission,
+            callback_group=self._callback_group,
+        )
+        self._resume_mission_service = self.create_service(
+            ResumeMissionV1,
+            SERVICE_RESUME_MISSION,
+            self._resume_mission,
+            callback_group=self._callback_group,
+        )
+        self._retry_mission_service = self.create_service(
+            RetryMissionV1,
+            SERVICE_RETRY_MISSION,
+            self._retry_mission,
+            callback_group=self._callback_group,
+        )
+        self._get_mission_state_service = self.create_service(
+            GetMissionStateV1,
+            SERVICE_GET_MISSION_STATE,
+            self._get_mission_state,
             callback_group=self._callback_group,
         )
         self._stop_tasks_service = self.create_service(
@@ -949,6 +1060,8 @@ class TaskOrchestratorNode(Node):
         mission_task_id: str,
         request: ExecuteTaskV1.Goal,
     ) -> _TaskExecutionOutcome:
+        self._remember_mission_task_id(mission.mission_id, mission_task_id)
+        self._agent_registry.set_mission_task_id(mission.mission_id, mission_task_id)
         mission_results: list[MissionSubtaskResult] = []
         mission_results_by_subtask_id: dict[str, MissionSubtaskResult] = {}
         remaining_subtask_ids = {subtask.subtask_id for subtask in mission.subtasks}
@@ -1731,6 +1844,12 @@ class TaskOrchestratorNode(Node):
     def _time_to_ns(self, value: Any) -> int:
         return int(getattr(value, "sec", 0)) * 1_000_000_000 + int(getattr(value, "nanosec", 0))
 
+    def _ns_to_time(self, value: int) -> Time:
+        msg = Time()
+        msg.sec = int(value // 1_000_000_000)
+        msg.nanosec = int(value % 1_000_000_000)
+        return msg
+
     def _task_result_to_execute_result(self, source: TaskResultV1) -> ExecuteTaskV1.Result:
         result = ExecuteTaskV1.Result()
         result.api_version = source.api_version
@@ -2027,6 +2146,409 @@ class TaskOrchestratorNode(Node):
         response.normalized_task_data_json = normalized_task_data_json
         return response
 
+    def _register_agent(
+        self,
+        request: RegisterAgentV1.Request,
+        response: RegisterAgentV1.Response,
+    ) -> RegisterAgentV1.Response:
+        try:
+            registration = self._agent_registry.register_agent(
+                agent_id=request.agent_id,
+                display_name=request.display_name,
+                agent_type=request.agent_type,
+                capabilities=tuple(request.capabilities),
+                heartbeat_timeout_sec=float(request.heartbeat_timeout_sec),
+                metadata_json=request.metadata_json,
+                now_ns=self._now_ns(),
+            )
+        except AgentRegistryError as exc:
+            response.success = False
+            response.error_code = exc.error_code
+            response.error_message = str(exc)
+            return response
+
+        response.success = True
+        response.error_code = ""
+        response.error_message = ""
+        response.agent = self._agent_registration_to_msg(registration)
+        self._publish_agent_event("agent.registered", registration.agent_id, {"agent_type": registration.agent_type})
+        return response
+
+    def _list_agents(
+        self,
+        request: ListAgentsV1.Request,
+        response: ListAgentsV1.Response,
+    ) -> ListAgentsV1.Response:
+        response.agents = [
+            self._agent_registration_to_msg(registration)
+            for registration in self._agent_registry.list_agents(
+                now_ns=self._now_ns(),
+                include_stale=bool(request.include_stale),
+                agent_id=request.agent_id,
+            )
+        ]
+        return response
+
+    def _claim_mission(
+        self,
+        request: ClaimMissionV1.Request,
+        response: ClaimMissionV1.Response,
+    ) -> ClaimMissionV1.Response:
+        try:
+            lease = self._agent_registry.claim_mission(
+                agent_id=request.agent_id,
+                mission_id=request.mission_id,
+                lease_duration_sec=float(request.lease_duration_sec),
+                lease_token=request.lease_token,
+                force=bool(request.force),
+                metadata_json=request.metadata_json,
+                now_ns=self._now_ns(),
+            )
+        except AgentRegistryError as exc:
+            response.success = False
+            response.error_code = exc.error_code
+            response.error_message = str(exc)
+            return response
+
+        response.success = True
+        response.error_code = ""
+        response.error_message = ""
+        response.lease = self._mission_lease_to_msg(lease)
+        self._publish_agent_event(
+            "mission.claimed",
+            request.agent_id,
+            {"mission_id": lease.mission_id, "lease_status": response.lease.lease_status},
+        )
+        return response
+
+    def _release_mission(
+        self,
+        request: ReleaseMissionV1.Request,
+        response: ReleaseMissionV1.Response,
+    ) -> ReleaseMissionV1.Response:
+        try:
+            lease = self._agent_registry.release_mission(
+                agent_id=request.agent_id,
+                mission_id=request.mission_id,
+                lease_token=request.lease_token,
+                now_ns=self._now_ns(),
+            )
+        except AgentRegistryError as exc:
+            response.success = False
+            response.error_code = exc.error_code
+            response.error_message = str(exc)
+            return response
+
+        response.success = True
+        response.error_code = ""
+        response.error_message = ""
+        response.lease = self._mission_lease_to_msg(lease)
+        self._publish_agent_event("mission.released", request.agent_id, {"mission_id": request.mission_id})
+        return response
+
+    def _validate_mission(
+        self,
+        request: ValidateMissionV1.Request,
+        response: ValidateMissionV1.Response,
+    ) -> ValidateMissionV1.Response:
+        try:
+            if request.agent_id:
+                self._agent_registry.require_live_agent(request.agent_id, now_ns=self._now_ns())
+            _mission_id, normalized_mission_json = self._validated_mission_payload(
+                mission_id=request.mission_id,
+                mission_json=request.mission_json,
+            )
+            response.schema_json = (
+                self._task_schema_json(self._system_mission_task()) if request.include_schema else "{}"
+            )
+        except AgentRegistryError as exc:
+            response.valid = False
+            response.error_code = exc.error_code
+            response.error_message = str(exc)
+            response.normalized_mission_json = request.mission_json
+            response.schema_json = "{}"
+            return response
+        except (
+            ActionTaskConfigError,
+            ActionTaskDataError,
+            ControlTaskValidationError,
+            MissionTaskValidationError,
+            ServiceTaskConfigError,
+            ServiceTaskDataError,
+            WaitTaskValidationError,
+        ) as exc:
+            response.valid = False
+            response.error_code = self._validation_error_code(exc)
+            response.error_message = str(exc)
+            response.normalized_mission_json = request.mission_json
+            response.schema_json = "{}"
+            return response
+
+        response.valid = True
+        response.error_code = ""
+        response.error_message = ""
+        response.normalized_mission_json = normalized_mission_json
+        return response
+
+    def _submit_mission(
+        self,
+        request: SubmitMissionV1.Request,
+        response: SubmitMissionV1.Response,
+    ) -> SubmitMissionV1.Response:
+        try:
+            mission_id, normalized_mission_json = self._validated_mission_payload(
+                mission_id=request.mission_id,
+                mission_json=request.mission_json,
+            )
+            lease = self._claim_or_verify_mission_command_lease(
+                agent_id=request.agent_id,
+                mission_id=mission_id,
+                lease_token=request.lease_token,
+                lease_duration_sec=float(request.lease_duration_sec),
+                allow_auto_claim=True,
+            )
+            task_id = request.task_id or f"mission-{uuid.uuid4()}"
+            goal = self._submit_mission_request_to_goal(
+                request=request,
+                mission_id=mission_id,
+                task_id=task_id,
+                normalized_mission_json=normalized_mission_json,
+            )
+        except AgentRegistryError as exc:
+            response.success = False
+            response.error_code = exc.error_code
+            response.error_message = str(exc)
+            return response
+        except (
+            ActionTaskConfigError,
+            ActionTaskDataError,
+            ControlTaskValidationError,
+            MissionTaskValidationError,
+            ServiceTaskConfigError,
+            ServiceTaskDataError,
+            WaitTaskValidationError,
+        ) as exc:
+            response.success = False
+            response.error_code = self._validation_error_code(exc)
+            response.error_message = str(exc)
+            return response
+
+        self._remember_mission_task_id(mission_id, task_id)
+        lease = self._agent_registry.set_mission_task_id(mission_id, task_id) or lease
+
+        thread = threading.Thread(
+            target=self._execute_submitted_mission,
+            args=(goal,),
+            name=f"task-orchestrator-agent-mission-{task_id}",
+            daemon=True,
+        )
+        thread.start()
+
+        response.success = True
+        response.error_code = ""
+        response.error_message = ""
+        response.task_id = task_id
+        response.lease = self._mission_lease_to_msg(lease)
+        self._publish_agent_event(
+            "mission.submitted",
+            request.agent_id,
+            {"mission_id": mission_id, "mission_task_id": task_id},
+        )
+        return response
+
+    def _cancel_mission_service_cb(
+        self,
+        request: CancelMissionV1.Request,
+        response: CancelMissionV1.Response,
+    ) -> CancelMissionV1.Response:
+        try:
+            task_id = self._authorized_mission_task_id(
+                agent_id=request.agent_id,
+                mission_id=request.mission_id,
+                lease_token=request.lease_token,
+            )
+        except AgentRegistryError as exc:
+            response.success = False
+            response.error_code = exc.error_code
+            response.error_message = str(exc)
+            response.failed_task_ids = []
+            return response
+
+        cancel_request = CancelTasksV1.Request()
+        cancel_request.task_ids = [task_id]
+        cancel_request.source = request.source or request.agent_id
+        cancel_request.correlation_id = request.correlation_id
+        cancel_response = self._cancel_matching_tasks(cancel_request, CancelTasksV1.Response())
+
+        response.success = cancel_response.success
+        response.canceled_task_ids = list(cancel_response.canceled_task_ids)
+        response.failed_task_ids = list(cancel_response.failed_task_ids)
+        response.error_code = cancel_response.error_code
+        response.error_message = cancel_response.error_message
+        return response
+
+    def _pause_mission(
+        self,
+        request: PauseMissionV1.Request,
+        response: PauseMissionV1.Response,
+    ) -> PauseMissionV1.Response:
+        try:
+            task_id = self._authorized_mission_task_id(
+                agent_id=request.agent_id,
+                mission_id=request.mission_id,
+                lease_token=request.lease_token,
+            )
+        except AgentRegistryError as exc:
+            response.success = False
+            response.error_code = exc.error_code
+            response.error_message = str(exc)
+            response.failed_task_ids = []
+            return response
+
+        pause_request = PauseTasksV1.Request()
+        pause_request.task_ids = [task_id]
+        pause_request.source = request.source or request.agent_id
+        pause_request.correlation_id = request.correlation_id
+        pause_response = self._pause_matching_tasks(pause_request, PauseTasksV1.Response())
+
+        response.success = pause_response.success
+        response.paused_task_ids = list(pause_response.paused_task_ids)
+        response.failed_task_ids = list(pause_response.failed_task_ids)
+        response.error_code = pause_response.error_code
+        response.error_message = pause_response.error_message
+        return response
+
+    def _resume_mission(
+        self,
+        request: ResumeMissionV1.Request,
+        response: ResumeMissionV1.Response,
+    ) -> ResumeMissionV1.Response:
+        try:
+            task_id = self._authorized_mission_task_id(
+                agent_id=request.agent_id,
+                mission_id=request.mission_id,
+                lease_token=request.lease_token,
+            )
+        except AgentRegistryError as exc:
+            response.success = False
+            response.error_code = exc.error_code
+            response.error_message = str(exc)
+            response.failed_task_ids = []
+            return response
+
+        resume_request = ResumeTasksV1.Request()
+        resume_request.task_ids = [task_id]
+        resume_request.source = request.source or request.agent_id
+        resume_request.correlation_id = request.correlation_id
+        resume_response = self._resume_matching_tasks(resume_request, ResumeTasksV1.Response())
+
+        response.success = resume_response.success
+        response.resumed_task_ids = list(resume_response.resumed_task_ids)
+        response.failed_task_ids = list(resume_response.failed_task_ids)
+        response.error_code = resume_response.error_code
+        response.error_message = resume_response.error_message
+        return response
+
+    def _retry_mission(
+        self,
+        request: RetryMissionV1.Request,
+        response: RetryMissionV1.Response,
+    ) -> RetryMissionV1.Response:
+        try:
+            task_id = self._authorized_mission_task_id(
+                agent_id=request.agent_id,
+                mission_id=request.mission_id,
+                lease_token=request.lease_token,
+            )
+            record = self._mission_task_record(request.mission_id, task_id=task_id)
+            if record is None:
+                raise AgentRegistryError("UNKNOWN_TASK", f"Mission state was not found: {request.mission_id}")
+            if record.result.status not in self._terminal_statuses():
+                raise AgentRegistryError("POLICY_REJECTED", "Only terminal missions can be retried.")
+            _mission_id, normalized_mission_json = self._validated_mission_payload(
+                mission_id=request.mission_id,
+                mission_json=record.task_data_json,
+            )
+        except AgentRegistryError as exc:
+            response.success = False
+            response.error_code = exc.error_code
+            response.error_message = str(exc)
+            return response
+        except (
+            ActionTaskConfigError,
+            ActionTaskDataError,
+            ControlTaskValidationError,
+            MissionTaskValidationError,
+            ServiceTaskConfigError,
+            ServiceTaskDataError,
+            WaitTaskValidationError,
+        ) as exc:
+            response.success = False
+            response.error_code = self._validation_error_code(exc)
+            response.error_message = str(exc)
+            return response
+
+        retry_task_id = request.task_id or f"mission-retry-{uuid.uuid4()}"
+        submit_request = SubmitMissionV1.Request()
+        submit_request.agent_id = request.agent_id
+        submit_request.mission_id = request.mission_id
+        submit_request.task_id = retry_task_id
+        submit_request.mission_json = normalized_mission_json
+        submit_request.lease_token = request.lease_token
+        submit_request.source = request.source or request.agent_id
+        submit_request.correlation_id = request.correlation_id
+        submit_request.idempotency_key = request.idempotency_key
+        goal = self._submit_mission_request_to_goal(
+            request=submit_request,
+            mission_id=request.mission_id,
+            task_id=retry_task_id,
+            normalized_mission_json=normalized_mission_json,
+        )
+        self._remember_mission_task_id(request.mission_id, retry_task_id)
+        lease = self._agent_registry.set_mission_task_id(request.mission_id, retry_task_id)
+
+        thread = threading.Thread(
+            target=self._execute_submitted_mission,
+            args=(goal,),
+            name=f"task-orchestrator-agent-mission-retry-{retry_task_id}",
+            daemon=True,
+        )
+        thread.start()
+
+        response.success = True
+        response.error_code = ""
+        response.error_message = ""
+        response.task_id = retry_task_id
+        if lease is not None:
+            response.lease = self._mission_lease_to_msg(lease)
+        return response
+
+    def _get_mission_state(
+        self,
+        request: GetMissionStateV1.Request,
+        response: GetMissionStateV1.Response,
+    ) -> GetMissionStateV1.Response:
+        try:
+            if request.agent_id:
+                self._agent_registry.require_live_agent(request.agent_id, now_ns=self._now_ns())
+        except AgentRegistryError as exc:
+            response.found = False
+            response.error_code = exc.error_code
+            response.error_message = str(exc)
+            return response
+
+        lease = self._agent_registry.get_mission_lease(request.mission_id)
+        task_id = self._mission_task_id_for_mission(request.mission_id)
+        record = self._mission_task_record(request.mission_id, task_id=task_id)
+        response.found = record is not None or lease is not None
+        response.error_code = "" if response.found else ErrorCodeV1.UNKNOWN_TASK
+        response.error_message = "" if response.found else f"Mission state was not found: {request.mission_id}"
+        if record is not None:
+            response.task = self._copy_task_record(record)
+        if lease is not None:
+            response.lease = self._mission_lease_to_msg(lease)
+        return response
+
     def _normalized_task_data_json(self, task: TaskDefinition, task_data_json: str) -> str:
         payload_text = task_data_json or "{}"
         if task.task_server_type == "system/mission":
@@ -2039,6 +2561,260 @@ class TaskOrchestratorNode(Node):
         if not isinstance(payload, dict):
             return payload_text
         return self._json_dumps(payload)
+
+    def _validated_mission_payload(self, mission_id: str, mission_json: str) -> tuple[str, str]:
+        payload_text = self._mission_json_with_requested_id(mission_id=mission_id, mission_json=mission_json)
+        normalized_mission_json = self._normalized_task_data_json(self._system_mission_task(), payload_text)
+        parsed_mission = self._mission_task.parse(
+            normalized_mission_json,
+            default_mission_id=mission_id or f"mission-{uuid.uuid4()}",
+        )
+        if mission_id and parsed_mission.mission_id != mission_id:
+            raise AgentRegistryError(
+                ErrorCodeV1.TASK_DATA_PARSING_FAILED,
+                f"mission_id mismatch: request={mission_id}, payload={parsed_mission.mission_id}",
+            )
+        self._validate_mission_subtasks(parsed_mission)
+        return parsed_mission.mission_id, normalized_mission_json
+
+    def _mission_json_with_requested_id(self, mission_id: str, mission_json: str) -> str:
+        payload_text = mission_json or "{}"
+        if not mission_id:
+            return payload_text
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            return payload_text
+        if not isinstance(payload, dict):
+            return payload_text
+        if "mission_id" not in payload:
+            payload = dict(payload)
+            payload["mission_id"] = mission_id
+        return self._json_dumps(payload)
+
+    def _system_mission_task(self) -> TaskDefinition:
+        task = self._task_registry.get("system/mission")
+        if task is None:
+            raise AgentRegistryError(ErrorCodeV1.INTERNAL_ERROR, "system/mission task is not registered")
+        return task
+
+    def _validate_mission_subtasks(self, mission: MissionTaskRequest) -> None:
+        for subtask in mission.subtasks:
+            task = self._task_registry.get(subtask.task_name)
+            if task is None:
+                raise AgentRegistryError(ErrorCodeV1.UNKNOWN_TASK, f"Unknown task: {subtask.task_name}")
+            validation_goal = ExecuteTaskV1.Goal()
+            validation_goal.api_version = self.api_version
+            validation_goal.task_id = subtask.task_id
+            validation_goal.task_name = subtask.task_name
+            validation_goal.task_data_json = subtask.task_data_json
+            self._prepare_task(task, validation_goal, subtask.task_id)
+
+    def _validation_error_code(self, exc: Exception) -> str:
+        if isinstance(exc, (ActionTaskConfigError, ServiceTaskConfigError)):
+            return ErrorCodeV1.TASK_START_FAILED
+        return ErrorCodeV1.TASK_DATA_PARSING_FAILED
+
+    def _claim_or_verify_mission_command_lease(
+        self,
+        *,
+        agent_id: str,
+        mission_id: str,
+        lease_token: str,
+        lease_duration_sec: float,
+        allow_auto_claim: bool,
+    ) -> MissionLease:
+        existing = self._agent_registry.get_mission_lease(mission_id)
+        if existing is not None and self._agent_registry.lease_status(existing, now_ns=self._now_ns()) == "ACTIVE":
+            return self._agent_registry.verify_lease(
+                agent_id=agent_id,
+                mission_id=mission_id,
+                lease_token=lease_token,
+                now_ns=self._now_ns(),
+            )
+        if not allow_auto_claim:
+            self._agent_registry.require_live_agent(agent_id, now_ns=self._now_ns())
+            raise AgentRegistryError("POLICY_REJECTED", f"Mission {mission_id} does not have an active lease.")
+        return self._agent_registry.claim_mission(
+            agent_id=agent_id,
+            mission_id=mission_id,
+            lease_duration_sec=lease_duration_sec,
+            metadata_json="{}",
+            now_ns=self._now_ns(),
+        )
+
+    def _authorized_mission_task_id(self, *, agent_id: str, mission_id: str, lease_token: str) -> str:
+        self._claim_or_verify_mission_command_lease(
+            agent_id=agent_id,
+            mission_id=mission_id,
+            lease_token=lease_token,
+            lease_duration_sec=0.0,
+            allow_auto_claim=False,
+        )
+        task_id = self._mission_task_id_for_mission(mission_id)
+        if not task_id:
+            raise AgentRegistryError(ErrorCodeV1.UNKNOWN_TASK, f"Mission task was not found: {mission_id}")
+        return task_id
+
+    def _submit_mission_request_to_goal(
+        self,
+        *,
+        request: SubmitMissionV1.Request,
+        mission_id: str,
+        task_id: str,
+        normalized_mission_json: str,
+    ) -> ExecuteTaskV1.Goal:
+        goal = ExecuteTaskV1.Goal()
+        goal.api_version = self.api_version
+        goal.task_id = task_id
+        goal.task_name = "system/mission"
+        goal.source = request.source or request.agent_id
+        goal.priority = request.priority
+        goal.correlation_id = request.correlation_id
+        goal.task_data_json = normalized_mission_json
+        goal.tags = list(request.tags)
+        goal.scheduled_at = request.scheduled_at
+        goal.delay_sec = request.delay_sec
+        goal.deadline_at = request.deadline_at
+        goal.timeout_sec = request.timeout_sec
+        goal.queue_on_conflict = request.queue_on_conflict
+        goal.idempotency_key = request.idempotency_key
+        goal.metadata_json = self._mission_command_metadata_json(request.metadata_json, mission_id, request.agent_id)
+        goal.robot_id = request.robot_id
+        goal.fleet_id = request.fleet_id
+        goal.site_id = request.site_id
+        goal.zone_id = request.zone_id
+        goal.operator_id = request.operator_id
+        goal.tenant_id = request.tenant_id
+        goal.trace_id = request.trace_id
+        return goal
+
+    def _mission_command_metadata_json(self, metadata_json: str, mission_id: str, agent_id: str) -> str:
+        payload_text = metadata_json or "{}"
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError as exc:
+            raise AgentRegistryError(
+                ErrorCodeV1.TASK_DATA_PARSING_FAILED,
+                f"metadata_json is not valid JSON: {exc.msg}",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise AgentRegistryError(ErrorCodeV1.TASK_DATA_PARSING_FAILED, "metadata_json must decode to an object")
+        payload = dict(payload)
+        payload.setdefault("mission_id", mission_id)
+        payload.setdefault("agent_id", agent_id)
+        return self._json_dumps(payload)
+
+    def _execute_submitted_mission(self, request: ExecuteTaskV1.Goal) -> None:
+        try:
+            self._execute_task(_ChildGoalHandle(request))
+        except Exception as exc:  # noqa: BLE001 - background command failures are surfaced through task state.
+            self.get_logger().error(f"Failed to execute submitted mission {request.task_id}: {exc}")
+
+    def _remember_mission_task_id(self, mission_id: str, task_id: str) -> None:
+        if mission_id and task_id:
+            self._mission_task_ids[mission_id] = task_id
+
+    def _mission_task_id_for_mission(self, mission_id: str) -> str:
+        if not mission_id:
+            return ""
+        task_id = self._mission_task_ids.get(mission_id, "")
+        if task_id:
+            return task_id
+        lease = self._agent_registry.get_mission_lease(mission_id)
+        if lease is not None and lease.task_id:
+            self._remember_mission_task_id(mission_id, lease.task_id)
+            return lease.task_id
+        record = self._mission_task_record(mission_id)
+        if record is None:
+            return ""
+        self._remember_mission_task_id(mission_id, record.result.task_id)
+        return record.result.task_id
+
+    def _mission_task_record(self, mission_id: str, task_id: str = "") -> TaskRecordV1 | None:
+        if task_id:
+            record = self._task_records.get(task_id)
+            if record is None:
+                record = self._stored_task_record(task_id)
+            if record is not None:
+                return record
+        for record in reversed(self._task_records.values()):
+            if self._record_mission_id(record) == mission_id:
+                return record
+        if self._storage is not None:
+            request = ListTaskRecordsV1.Request()
+            request.task_name = "system/mission"
+            for record in self._stored_task_records(request):
+                if self._record_mission_id(record) == mission_id:
+                    return record
+        return None
+
+    def _record_mission_id(self, record: TaskRecordV1) -> str:
+        for payload_text in (record.task_data_json, record.result.result_json):
+            try:
+                payload = json.loads(payload_text or "{}")
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and isinstance(payload.get("mission_id"), str):
+                return payload["mission_id"]
+        return ""
+
+    def _agent_registration_to_msg(self, registration: AgentRegistration) -> AgentRecordV1:
+        now_ns = self._now_ns()
+        msg = AgentRecordV1()
+        msg.api_version = self.api_version
+        msg.agent_id = registration.agent_id
+        msg.display_name = registration.display_name
+        msg.agent_type = registration.agent_type
+        msg.heartbeat_status = (
+            AgentStatusV1.STALE
+            if self._agent_registry.is_agent_stale(registration.agent_id, now_ns=now_ns)
+            else AgentStatusV1.ONLINE
+        )
+        msg.registered_at = self._ns_to_time(registration.registered_at_ns)
+        msg.last_heartbeat_at = self._ns_to_time(registration.last_heartbeat_at_ns)
+        msg.stale_at = self._ns_to_time(self._agent_registry.agent_stale_at_ns(registration))
+        msg.heartbeat_timeout_sec = registration.heartbeat_timeout_sec
+        msg.capabilities = list(registration.capabilities)
+        msg.metadata_json = registration.metadata_json
+        msg.current_mission_id = self._agent_registry.active_mission_id_for_agent(registration.agent_id, now_ns=now_ns)
+        msg.stamp = self.get_clock().now().to_msg()
+        return msg
+
+    def _mission_lease_to_msg(self, lease: MissionLease) -> MissionLeaseV1:
+        msg = MissionLeaseV1()
+        msg.api_version = self.api_version
+        msg.mission_id = lease.mission_id
+        msg.task_id = lease.task_id
+        msg.agent_id = lease.agent_id
+        msg.lease_token = lease.lease_token
+        msg.lease_status = self._mission_lease_status(lease)
+        msg.claimed_at = self._ns_to_time(lease.claimed_at_ns)
+        msg.renewed_at = self._ns_to_time(lease.renewed_at_ns)
+        msg.lease_expires_at = self._ns_to_time(lease.lease_expires_at_ns)
+        msg.metadata_json = lease.metadata_json
+        return msg
+
+    def _mission_lease_status(self, lease: MissionLease) -> str:
+        status = self._agent_registry.lease_status(lease, now_ns=self._now_ns())
+        if status == "ACTIVE":
+            return MissionLeaseStatusV1.ACTIVE
+        if status == "STALE_AGENT":
+            return MissionLeaseStatusV1.STALE_AGENT
+        if status == "RELEASED":
+            return MissionLeaseStatusV1.RELEASED
+        return MissionLeaseStatusV1.EXPIRED
+
+    def _publish_agent_event(self, event_type: str, agent_id: str, data: dict[str, Any]) -> None:
+        self._publish_event(
+            event_type=event_type,
+            task_id="",
+            task_name="agent",
+            source=agent_id,
+            correlation_id="",
+            status=TaskStatusV1.DONE,
+            data={"agent_id": agent_id, **data},
+        )
 
     def _task_schema_json(self, task: TaskDefinition) -> str:
         schema: dict[str, Any] = {

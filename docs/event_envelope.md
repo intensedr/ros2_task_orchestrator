@@ -14,7 +14,7 @@ are documented in [Public API Reference](public_api_reference.md).
 
 ```json
 {
-  "api_version": "v1beta1",
+  "api_version": "v1",
   "event_id": "01J00000000000000000000000",
   "event_type": "task.started",
   "task_id": "7b3a8a8d-4c8f-4d87-8c75-5cf9eae71ab7",

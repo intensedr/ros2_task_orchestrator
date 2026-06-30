@@ -1,0 +1,12 @@
+{
+  "mission_id": "agent-demo-wait",
+  "subtasks": [
+    {
+      "subtask_id": "wait",
+      "task_name": "system/wait",
+      "task_data_json": {
+        "duration_sec": 1.0
+      }
+    }
+  ]
+}

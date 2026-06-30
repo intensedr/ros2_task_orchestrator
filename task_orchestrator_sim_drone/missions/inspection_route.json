@@ -1,0 +1,94 @@
+{
+  "mission_id": "sim-drone-inspection-route",
+  "subtasks": [
+    {
+      "subtask_id": "takeoff",
+      "task_name": "drone/takeoff",
+      "task_data_json": {
+        "target_altitude": 1.8,
+        "duration_sec": 3.0,
+        "frame_id": "map"
+      },
+      "timeout_sec": 10.0
+    },
+    {
+      "subtask_id": "waypoint-a",
+      "task_name": "drone/go_to_waypoint",
+      "depends_on": ["takeoff"],
+      "task_data_json": {
+        "target_pose": {
+          "header": {
+            "frame_id": "map"
+          },
+          "pose": {
+            "position": {
+              "x": 1.5,
+              "y": 1.2,
+              "z": 1.8
+            },
+            "orientation": {
+              "w": 1.0
+            }
+          }
+        },
+        "speed_mps": 0.7,
+        "zone_id": "inspection-zone-a"
+      },
+      "timeout_sec": 20.0
+    },
+    {
+      "subtask_id": "inspect-a",
+      "task_name": "drone/hover",
+      "depends_on": ["waypoint-a"],
+      "task_data_json": {
+        "duration_sec": 2.0
+      },
+      "timeout_sec": 8.0
+    },
+    {
+      "subtask_id": "waypoint-b",
+      "task_name": "drone/go_to_waypoint",
+      "depends_on": ["inspect-a"],
+      "task_data_json": {
+        "target_pose": {
+          "header": {
+            "frame_id": "map"
+          },
+          "pose": {
+            "position": {
+              "x": 2.2,
+              "y": -1.0,
+              "z": 1.8
+            },
+            "orientation": {
+              "z": -0.382683,
+              "w": 0.92388
+            }
+          }
+        },
+        "speed_mps": 0.7,
+        "zone_id": "inspection-zone-b"
+      },
+      "timeout_sec": 20.0
+    },
+    {
+      "subtask_id": "inspect-b",
+      "task_name": "drone/hover",
+      "depends_on": ["waypoint-b"],
+      "task_data_json": {
+        "duration_sec": 2.0
+      },
+      "timeout_sec": 8.0
+    },
+    {
+      "subtask_id": "land",
+      "task_name": "drone/land",
+      "depends_on": ["inspect-b"],
+      "task_data_json": {
+        "landing_zone_id": "home",
+        "duration_sec": 4.0
+      },
+      "timeout_sec": 12.0
+    }
+  ]
+}

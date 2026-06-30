@@ -1,0 +1,8 @@
+string agent_id
+string mission_id
+---
+bool found
+string error_code
+string error_message
+TaskRecordV1 task
+MissionLeaseV1 lease

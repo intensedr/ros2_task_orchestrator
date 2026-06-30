@@ -10,9 +10,13 @@ find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 set(msg_files
+  "msg/AgentRecordV1.msg"
+  "msg/AgentStatusV1.msg"
   "msg/ActiveTaskArrayV1.msg"
   "msg/ActiveTaskV1.msg"
   "msg/ErrorCodeV1.msg"
+  "msg/MissionLeaseStatusV1.msg"
+  "msg/MissionLeaseV1.msg"
   "msg/SubtaskGoalV1.msg"
   "msg/SubtaskResultV1.msg"
   "msg/TaskEventV1.msg"
@@ -25,14 +29,25 @@ set(msg_files
 
 set(srv_files
   "srv/CancelTasksV1.srv"
+  "srv/CancelMissionV1.srv"
+  "srv/ClaimMissionV1.srv"
   "srv/GetTaskV1.srv"
+  "srv/GetMissionStateV1.srv"
+  "srv/ListAgentsV1.srv"
   "srv/ListEventsV1.srv"
   "srv/ListTaskRecordsV1.srv"
   "srv/ListTasksV1.srv"
+  "srv/PauseMissionV1.srv"
   "srv/PauseTasksV1.srv"
   "srv/ReloadConfigV1.srv"
+  "srv/RegisterAgentV1.srv"
+  "srv/ReleaseMissionV1.srv"
+  "srv/ResumeMissionV1.srv"
   "srv/ResumeTasksV1.srv"
+  "srv/RetryMissionV1.srv"
   "srv/StopTasksV1.srv"
+  "srv/SubmitMissionV1.srv"
+  "srv/ValidateMissionV1.srv"
   "srv/ValidateTaskV1.srv"
 )
 

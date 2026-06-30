@@ -8,4 +8,9 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+install(
+  PROGRAMS scripts/demo_agent_client
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()

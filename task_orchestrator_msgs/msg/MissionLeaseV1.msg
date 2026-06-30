@@ -1,0 +1,10 @@
+string api_version
+string mission_id
+string task_id
+string agent_id
+string lease_token
+string lease_status
+builtin_interfaces/Time claimed_at
+builtin_interfaces/Time renewed_at
+builtin_interfaces/Time lease_expires_at
+string metadata_json

@@ -1,7 +1,8 @@
 # Public API Reference
 
 This file defines the public contract for `task_orchestrator_msgs`.
-Interface names are versioned with `V1` until the project reaches `v1.0`.
+Interface names are versioned with `V1`; the default public `api_version` is
+`"v1"` for the 1.0 release.
 
 ## Naming
 
@@ -16,7 +17,7 @@ Interface names are versioned with `V1` until the project reaches `v1.0`.
 Task-related public messages carry this common metadata shape. Constants-only
 messages such as `TaskStatusV1` and `ErrorCodeV1` are intentionally excluded:
 
-- `api_version`: API version string, initially `"v1beta1"`.
+- `api_version`: API version string, `"v1"` by default.
 - `task_id`: unique task execution ID.
 - `task_name`: configured task type name.
 - `source`: caller or system that requested the task.
@@ -624,6 +625,170 @@ Semantics:
 - `schema_json` is a best-effort JSON Schema for the configured payload shape
   when `include_schema` is true.
 
+Agent-ready mission operation services:
+
+`srv/RegisterAgentV1.srv`
+
+```text
+string agent_id
+string display_name
+string agent_type
+string[] capabilities
+float64 heartbeat_timeout_sec
+string metadata_json
+---
+bool success
+string error_code
+string error_message
+AgentRecordV1 agent
+```
+
+`srv/ListAgentsV1.srv`
+
+```text
+string agent_id
+bool include_stale
+---
+AgentRecordV1[] agents
+```
+
+`msg/AgentRecordV1.msg`
+
+```text
+string api_version
+string agent_id
+string display_name
+string agent_type
+string heartbeat_status
+builtin_interfaces/Time registered_at
+builtin_interfaces/Time last_heartbeat_at
+builtin_interfaces/Time stale_at
+float64 heartbeat_timeout_sec
+string[] capabilities
+string metadata_json
+string current_mission_id
+builtin_interfaces/Time stamp
+```
+
+`srv/ClaimMissionV1.srv`
+
+```text
+string agent_id
+string mission_id
+float64 lease_duration_sec
+string lease_token
+bool force
+string metadata_json
+---
+bool success
+string error_code
+string error_message
+MissionLeaseV1 lease
+```
+
+`srv/ReleaseMissionV1.srv`
+
+```text
+string agent_id
+string mission_id
+string lease_token
+---
+bool success
+string error_code
+string error_message
+MissionLeaseV1 lease
+```
+
+`msg/MissionLeaseV1.msg`
+
+```text
+string api_version
+string mission_id
+string task_id
+string agent_id
+string lease_token
+string lease_status
+builtin_interfaces/Time claimed_at
+builtin_interfaces/Time renewed_at
+builtin_interfaces/Time lease_expires_at
+string metadata_json
+```
+
+`srv/ValidateMissionV1.srv`
+
+```text
+string agent_id
+string mission_id
+string mission_json
+bool include_schema
+---
+bool valid
+string error_code
+string error_message
+string normalized_mission_json
+string schema_json
+```
+
+`srv/SubmitMissionV1.srv`
+
+```text
+string agent_id
+string mission_id
+string task_id
+string mission_json
+string lease_token
+float64 lease_duration_sec
+string source
+int32 priority
+string correlation_id
+string[] tags
+builtin_interfaces/Time scheduled_at
+float64 delay_sec
+builtin_interfaces/Time deadline_at
+float64 timeout_sec
+bool queue_on_conflict
+string idempotency_key
+string metadata_json
+string robot_id
+string fleet_id
+string site_id
+string zone_id
+string operator_id
+string tenant_id
+string trace_id
+---
+bool success
+string error_code
+string error_message
+string task_id
+MissionLeaseV1 lease
+```
+
+Mission command controls:
+
+- `CancelMissionV1`: cancel the active mission task for a valid lease.
+- `PauseMissionV1`: pause the active mission task when configured hooks support
+  pause.
+- `ResumeMissionV1`: resume the active mission task when configured hooks
+  support resume.
+- `RetryMissionV1`: resubmit the latest terminal mission task from stored
+  mission JSON.
+- `GetMissionStateV1`: return the current `TaskRecordV1` and `MissionLeaseV1`
+  for a mission.
+
+Agent mission semantics:
+
+- `RegisterAgentV1` is also the heartbeat endpoint. Re-registering the same
+  `agent_id` refreshes `last_heartbeat_at`.
+- Active mission commands require a live agent and a matching `lease_token`.
+- A mission lease can be reclaimed when the owning agent heartbeat is stale or
+  the lease has expired.
+- `SubmitMissionV1` validates and accepts a mission without embedding any agent
+  runtime in the core; execution continues through the existing `system/mission`
+  task lifecycle.
+- Optional human approval, planner selection and product-specific agent loops
+  stay outside the core.
+
 Additional V1 query/admin services:
 
 `srv/ReloadConfigV1.srv`
@@ -689,7 +854,7 @@ standard-library `sqlite3` module and a writable `storage.sqlite_path`.
 ```yaml
 task_orchestrator:
   ros__parameters:
-    api_version: "v1beta1"
+    api_version: "v1"
     enable_compatibility_aliases: false
     enable_debug_task_servers: false
     event_record_limit: 1000
@@ -741,6 +906,5 @@ task_orchestrator:
 
 ## Versioning
 
-- `v0.x`: API may change, but all changes must be documented.
-- `v1.0`: public messages/actions/services become stable.
-- Breaking changes after `v1.0` require a new versioned interface name.
+- `v1`: public messages/actions/services are stable for the 1.0 release line.
+- Breaking changes after `v1` require a new versioned interface name.

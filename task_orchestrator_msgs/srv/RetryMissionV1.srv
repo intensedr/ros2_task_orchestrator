@@ -1,0 +1,13 @@
+string agent_id
+string mission_id
+string lease_token
+string task_id
+string source
+string correlation_id
+string idempotency_key
+---
+bool success
+string error_code
+string error_message
+string task_id
+MissionLeaseV1 lease

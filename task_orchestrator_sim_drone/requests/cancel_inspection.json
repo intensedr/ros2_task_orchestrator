@@ -1,0 +1,7 @@
+{
+  "agent_id": "sim-drone-demo-agent",
+  "mission_id": "sim-drone-inspection-route",
+  "lease_token": "<lease token returned by submit_inspection_mission>",
+  "source": "task_orchestrator_sim_drone",
+  "correlation_id": "sim-drone-cancel-inspection"
+}

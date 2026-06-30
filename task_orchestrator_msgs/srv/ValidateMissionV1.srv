@@ -1,0 +1,10 @@
+string agent_id
+string mission_id
+string mission_json
+bool include_schema
+---
+bool valid
+string error_code
+string error_message
+string normalized_mission_json
+string schema_json

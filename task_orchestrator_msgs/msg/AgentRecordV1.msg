@@ -1,0 +1,13 @@
+string api_version
+string agent_id
+string display_name
+string agent_type
+string heartbeat_status
+builtin_interfaces/Time registered_at
+builtin_interfaces/Time last_heartbeat_at
+builtin_interfaces/Time stale_at
+float64 heartbeat_timeout_sec
+string[] capabilities
+string metadata_json
+string current_mission_id
+builtin_interfaces/Time stamp
