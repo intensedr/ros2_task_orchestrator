@@ -44,7 +44,8 @@ class PreparedServiceTask:
     task: TaskDefinition
     srv_type: Any
     request: Any
-    timeout_sec: float | None
+    server_timeout_sec: float | None
+    result_timeout_sec: float | None
 
 
 @dataclass(frozen=True)
@@ -80,16 +81,23 @@ class ServiceTaskClient:
         except Exception as exc:  # noqa: BLE001 - rosidl raises several field/type exceptions here.
             raise ServiceTaskDataError(f"cannot convert task_data_json to {task.msg_interface}.Request: {exc}") from exc
 
-        timeout_sec = task.cancel_timeout if task.cancel_timeout > 0 else None
-        return PreparedServiceTask(task=task, srv_type=srv_type, request=request, timeout_sec=timeout_sec)
+        server_timeout_sec = task.server_timeout if task.server_timeout > 0 else None
+        result_timeout_sec = task.result_timeout if task.result_timeout > 0 else None
+        return PreparedServiceTask(
+            task=task,
+            srv_type=srv_type,
+            request=request,
+            server_timeout_sec=server_timeout_sec,
+            result_timeout_sec=result_timeout_sec,
+        )
 
     def execute(self, prepared: PreparedServiceTask) -> ServiceTaskResult:
         client = self._get_client(prepared)
-        if not client.wait_for_service(timeout_sec=prepared.timeout_sec):
+        if not client.wait_for_service(timeout_sec=prepared.server_timeout_sec):
             raise ServiceTaskServerUnavailable(f"service is not available: {prepared.task.topic}")
 
         try:
-            response = client.call(prepared.request, timeout_sec=prepared.timeout_sec)
+            response = client.call(prepared.request, timeout_sec=prepared.result_timeout_sec)
         except Exception as exc:  # noqa: BLE001 - surface rclpy/client exceptions as task failures.
             raise ServiceTaskCallError(f"service call failed: {exc}") from exc
 

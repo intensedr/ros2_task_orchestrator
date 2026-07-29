@@ -1,0 +1,46 @@
+{
+  "mission_id": "ardupilot-sitl-inspection",
+  "subtasks": [
+    {
+      "subtask_id": "takeoff",
+      "task_name": "drone/takeoff",
+      "task_data_json": {
+        "target_altitude": 5.0,
+        "duration_sec": 0.0,
+        "frame_id": "map"
+      },
+      "timeout_sec": 60.0
+    },
+    {
+      "subtask_id": "waypoint",
+      "task_name": "drone/go_to_waypoint",
+      "depends_on": ["takeoff"],
+      "task_data_json": {
+        "target_pose": {
+          "header": {"frame_id": "map"},
+          "pose": {
+            "position": {"x": 10.0, "y": 0.0, "z": 5.0},
+            "orientation": {"w": 1.0}
+          }
+        },
+        "speed_mps": 2.0,
+        "zone_id": "sitl-zone"
+      },
+      "timeout_sec": 90.0
+    },
+    {
+      "subtask_id": "hover",
+      "task_name": "drone/hover",
+      "depends_on": ["waypoint"],
+      "task_data_json": {"duration_sec": 3.0},
+      "timeout_sec": 15.0
+    },
+    {
+      "subtask_id": "land",
+      "task_name": "drone/land",
+      "depends_on": ["hover"],
+      "task_data_json": {"landing_zone_id": "current", "duration_sec": 0.0},
+      "timeout_sec": 120.0
+    }
+  ]
+}

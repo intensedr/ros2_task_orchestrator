@@ -1,0 +1,30 @@
+ardupilot_bridge:
+  ros__parameters:
+    connection_url: "tcp:127.0.0.1:5760"
+    source_system: 245
+    source_component: 191
+    frame_id: "map"
+    base_frame_id: "base_link"
+    heartbeat_timeout_sec: 3.0
+    reconnect_delay_sec: 1.0
+    command_timeout_sec: 3.0
+    command_retries: 2
+    telemetry_rate_hz: 10.0
+    action_update_rate_hz: 10.0
+    setpoint_rate_hz: 3.0
+    position_tolerance_m: 0.75
+    altitude_tolerance_m: 0.35
+    takeoff_timeout_sec: 45.0
+    waypoint_timeout_sec: 120.0
+    land_timeout_sec: 90.0
+    rtl_timeout_sec: 180.0
+    default_hover_sec: 5.0
+    min_takeoff_battery_percent: 20.0
+    require_localization: true
+    guided_mode: "GUIDED"
+    hover_mode: "GUIDED"
+    land_mode: "LAND"
+    rtl_mode: "RTL"
+    cancel_mode: "BRAKE"
+    update_orchestrator_admission: true
+    orchestrator_node_name: "/task_orchestrator"

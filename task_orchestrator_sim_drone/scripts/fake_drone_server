@@ -18,7 +18,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from tf2_ros import TransformBroadcaster
 
-from task_orchestrator_sim_drone.action import GoToWaypoint, Hover, Land, Takeoff
+from task_orchestrator_drone_msgs.action import GoToWaypoint, Hover, Land, Takeoff
 
 
 @dataclass

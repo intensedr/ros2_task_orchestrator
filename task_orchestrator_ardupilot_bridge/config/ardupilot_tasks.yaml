@@ -1,0 +1,135 @@
+tasks:
+  - task_name: drone/arm
+    topic: /drone/arm
+    msg_interface: task_orchestrator_drone_msgs/action/Arm
+    task_server_type: action
+    blocking: true
+    cancel_on_stop: false
+    reentrant: false
+    server_timeout: 5.0
+    result_timeout: 15.0
+    cancel_timeout: 5.0
+    resources: [airframe]
+    tags: [drone, flight, arming]
+    task_group: drone_flight
+    capability_tags: [flight, localization]
+    admission:
+      min_battery_percent: 20.0
+      requires_localization: true
+      allow_emergency_stop: false
+
+  - task_name: drone/takeoff
+    topic: /drone/takeoff
+    msg_interface: task_orchestrator_drone_msgs/action/Takeoff
+    task_server_type: action
+    blocking: true
+    cancel_on_stop: true
+    reentrant: false
+    server_timeout: 5.0
+    result_timeout: 60.0
+    cancel_timeout: 10.0
+    resources: [airframe]
+    tags: [drone, flight, takeoff]
+    task_group: drone_flight
+    capability_tags: [flight, localization]
+    admission:
+      min_battery_percent: 20.0
+      requires_localization: true
+      allow_emergency_stop: false
+
+  - task_name: drone/go_to_waypoint
+    topic: /drone/go_to_waypoint
+    msg_interface: task_orchestrator_drone_msgs/action/GoToWaypoint
+    task_server_type: action
+    blocking: true
+    cancel_on_stop: true
+    reentrant: false
+    server_timeout: 5.0
+    result_timeout: 180.0
+    cancel_timeout: 10.0
+    resources: [airframe]
+    tags: [drone, flight, waypoint]
+    task_group: drone_flight
+    capability_tags: [flight, localization]
+    zone_locked: true
+    admission:
+      min_battery_percent: 15.0
+      requires_localization: true
+      allow_emergency_stop: false
+
+  - task_name: drone/hover
+    topic: /drone/hover
+    msg_interface: task_orchestrator_drone_msgs/action/Hover
+    task_server_type: action
+    blocking: true
+    cancel_on_stop: true
+    reentrant: false
+    server_timeout: 5.0
+    result_timeout: 120.0
+    cancel_timeout: 10.0
+    resources: [airframe]
+    tags: [drone, flight, hover]
+    task_group: drone_flight
+    capability_tags: [flight, localization]
+    admission:
+      min_battery_percent: 10.0
+      requires_localization: true
+      allow_emergency_stop: false
+
+  - task_name: drone/land
+    topic: /drone/land
+    msg_interface: task_orchestrator_drone_msgs/action/Land
+    task_server_type: action
+    blocking: true
+    cancel_on_stop: true
+    reentrant: false
+    server_timeout: 5.0
+    result_timeout: 120.0
+    cancel_timeout: 10.0
+    resources: [airframe]
+    tags: [drone, flight, land]
+    task_group: drone_flight
+    capability_tags: [flight]
+    zone_locked: true
+    admission:
+      min_battery_percent: 0.0
+      requires_localization: false
+      allow_emergency_stop: true
+
+  - task_name: drone/rtl
+    topic: /drone/rtl
+    msg_interface: task_orchestrator_drone_msgs/action/ReturnToLaunch
+    task_server_type: action
+    blocking: true
+    cancel_on_stop: true
+    reentrant: false
+    server_timeout: 5.0
+    result_timeout: 240.0
+    cancel_timeout: 10.0
+    resources: [airframe]
+    tags: [drone, flight, rtl, safety]
+    task_group: drone_flight
+    capability_tags: [flight]
+    admission:
+      min_battery_percent: 0.0
+      requires_localization: false
+      allow_emergency_stop: true
+
+  - task_name: drone/set_mode
+    topic: /drone/set_mode
+    msg_interface: task_orchestrator_drone_msgs/action/SetFlightMode
+    task_server_type: action
+    blocking: true
+    cancel_on_stop: false
+    reentrant: false
+    server_timeout: 5.0
+    result_timeout: 15.0
+    cancel_timeout: 5.0
+    resources: [airframe]
+    tags: [drone, flight, mode]
+    task_group: drone_flight
+    capability_tags: [flight]
+    admission:
+      min_battery_percent: 0.0
+      requires_localization: false
+      allow_emergency_stop: true

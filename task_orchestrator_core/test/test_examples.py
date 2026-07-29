@@ -187,7 +187,7 @@ def test_sim_drone_task_config_loads():
 
     assert takeoff is not None
     assert takeoff.topic == "/drone/takeoff"
-    assert takeoff.msg_interface == "task_orchestrator_sim_drone/action/Takeoff"
+    assert takeoff.msg_interface == "task_orchestrator_drone_msgs/action/Takeoff"
     assert takeoff.task_server_type == "action"
     assert takeoff.resources == ("airframe",)
     assert takeoff.task_group == "drone_flight"

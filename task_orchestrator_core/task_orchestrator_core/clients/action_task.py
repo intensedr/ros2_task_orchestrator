@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from action_msgs.msg import GoalStatus
 from rclpy.action import ActionClient
@@ -55,7 +55,9 @@ class PreparedActionTask:
     task: TaskDefinition
     action_type: Any
     goal: Any
-    timeout_sec: float | None
+    server_timeout_sec: float | None
+    result_timeout_sec: float | None
+    cancel_timeout_sec: float | None
 
 
 @dataclass(frozen=True)
@@ -92,28 +94,61 @@ class ActionTaskClient:
         except Exception as exc:  # noqa: BLE001 - rosidl raises several field/type exceptions here.
             raise ActionTaskDataError(f"cannot convert task_data_json to {task.msg_interface}.Goal: {exc}") from exc
 
-        timeout_sec = task.cancel_timeout if task.cancel_timeout > 0 else None
-        return PreparedActionTask(task=task, action_type=action_type, goal=goal, timeout_sec=timeout_sec)
+        server_timeout_sec = task.server_timeout if task.server_timeout > 0 else None
+        result_timeout_sec = task.result_timeout if task.result_timeout > 0 else None
+        cancel_timeout_sec = task.cancel_timeout if task.cancel_timeout > 0 else None
+        return PreparedActionTask(
+            task=task,
+            action_type=action_type,
+            goal=goal,
+            server_timeout_sec=server_timeout_sec,
+            result_timeout_sec=result_timeout_sec,
+            cancel_timeout_sec=cancel_timeout_sec,
+        )
 
-    def execute(self, prepared: PreparedActionTask, task_id: str) -> ActionTaskResult:
+    def execute(
+        self,
+        prepared: PreparedActionTask,
+        task_id: str,
+        feedback_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> ActionTaskResult:
         client = self._get_client(prepared)
-        if not client.wait_for_server(timeout_sec=prepared.timeout_sec):
+        if not client.wait_for_server(timeout_sec=prepared.server_timeout_sec):
             raise ActionTaskServerUnavailable(f"action server is not available: {prepared.task.topic}")
 
-        goal_future = client.send_goal_async(prepared.goal)
-        goal_handle = self._wait_for_future(goal_future, prepared.timeout_sec, "action goal request timed out")
+        goal_future = client.send_goal_async(
+            prepared.goal,
+            feedback_callback=self._feedback_adapter(feedback_callback),
+        )
+        goal_handle = self._wait_for_future(
+            goal_future,
+            prepared.server_timeout_sec,
+            "action goal request timed out",
+        )
         if not getattr(goal_handle, "accepted", False):
             raise ActionTaskRejected(f"action goal was rejected: {prepared.task.topic}")
 
         self._goal_handles[task_id] = goal_handle
         try:
             result_future = goal_handle.get_result_async()
-            result_response = self._wait_for_future(result_future, prepared.timeout_sec, "action result timed out")
+            try:
+                result_response = self._wait_for_future(
+                    result_future,
+                    prepared.result_timeout_sec,
+                    "action result timed out",
+                )
+            except ActionTaskTimeout:
+                self._cancel_goal_handle(goal_handle, prepared.cancel_timeout_sec)
+                raise
             status = getattr(result_response, "status", None)
 
             if status == GoalStatus.STATUS_SUCCEEDED:
+                result_message = result_response.result
+                if hasattr(result_message, "success") and not bool(result_message.success):
+                    error_message = str(getattr(result_message, "error_message", "") or "backend reported failure")
+                    raise ActionTaskFailed(error_message)
                 return ActionTaskResult(
-                    result_json=json.dumps(message_to_ordereddict(result_response.result), sort_keys=True)
+                    result_json=json.dumps(message_to_ordereddict(result_message), sort_keys=True)
                 )
             if status == GoalStatus.STATUS_CANCELED:
                 raise ActionTaskCanceled(f"action goal was canceled: {prepared.task.topic}")
@@ -127,6 +162,9 @@ class ActionTaskClient:
         if goal_handle is None:
             return False
 
+        return self._cancel_goal_handle(goal_handle, timeout_sec)
+
+    def _cancel_goal_handle(self, goal_handle: Any, timeout_sec: float | None) -> bool:
         cancel_future = goal_handle.cancel_goal_async()
         response = self._wait_for_future(cancel_future, timeout_sec, "action cancel request timed out")
         goals_canceling = getattr(response, "goals_canceling", [])
@@ -144,6 +182,19 @@ class ActionTaskClient:
             )
             self._clients[key] = client
         return client
+
+    def _feedback_adapter(
+        self,
+        callback: Callable[[dict[str, Any]], None] | None,
+    ) -> Callable[[Any], None] | None:
+        if callback is None:
+            return None
+
+        def adapt(response: Any) -> None:
+            feedback = getattr(response, "feedback", response)
+            callback(dict(message_to_ordereddict(feedback)))
+
+        return adapt
 
     def _parse_payload(self, task_data_json: str) -> dict[str, Any]:
         payload_text = task_data_json or "{}"

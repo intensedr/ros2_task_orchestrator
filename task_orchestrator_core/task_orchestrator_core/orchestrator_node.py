@@ -688,7 +688,21 @@ class TaskOrchestratorNode(Node):
         self._publish_active_tasks()
 
         try:
-            outcome = self._execute_prepared_task(task, prepared_task, task_id, request)
+            outcome = self._execute_prepared_task(
+                task,
+                prepared_task,
+                task_id,
+                request,
+                feedback_callback=lambda feedback: self._forward_backend_action_feedback(
+                    goal_handle=goal_handle,
+                    task_id=task_id,
+                    task_name=request.task_name,
+                    request=request,
+                    created_at=created_at,
+                    started_at=started_at,
+                    feedback=feedback,
+                ),
+            )
             finished_at = self.get_clock().now().to_msg()
             outcome = self._apply_terminal_deadline(request, outcome, finished_at)
             result = self._make_result(
@@ -929,6 +943,7 @@ class TaskOrchestratorNode(Node):
         prepared_task: Any,
         task_id: str,
         request: ExecuteTaskV1.Goal,
+        feedback_callback: Any | None = None,
     ) -> _TaskExecutionOutcome:
         if task.task_server_type == "system/cancel_task":
             return self._execute_cancel_task(prepared_task, task_id, request)
@@ -955,7 +970,11 @@ class TaskOrchestratorNode(Node):
         if task.task_server_type == "action":
             return _TaskExecutionOutcome(
                 status=TaskStatusV1.DONE,
-                result_json=self._action_task_client.execute(prepared_task, task_id).result_json,
+                result_json=self._action_task_client.execute(
+                    prepared_task,
+                    task_id,
+                    feedback_callback=feedback_callback,
+                ).result_json,
             )
         if task.task_server_type == "service":
             return _TaskExecutionOutcome(
@@ -1832,7 +1851,8 @@ class TaskOrchestratorNode(Node):
         timeout_sec = self._effective_timeout_sec(request)
         if timeout_sec <= 0:
             return task
-        return replace(task, cancel_timeout=timeout_sec)
+        result_timeout = min(task.result_timeout, timeout_sec) if task.result_timeout > 0 else timeout_sec
+        return replace(task, result_timeout=result_timeout)
 
     def _goal_cancel_requested(self, goal_handle: Any) -> bool:
         value = getattr(goal_handle, "is_cancel_requested", False)
@@ -3349,6 +3369,8 @@ class TaskOrchestratorNode(Node):
             msg_interface=hook.msg_interface,
             task_server_type=hook.task_server_type,
             cancel_timeout=hook.timeout_sec,
+            server_timeout=hook.timeout_sec,
+            result_timeout=hook.timeout_sec,
         )
         try:
             if hook.task_server_type == "service":
@@ -3917,6 +3939,57 @@ class TaskOrchestratorNode(Node):
         msg.stamp = self.get_clock().now().to_msg()
         self._feedback_pub.publish(msg)
 
+    def _forward_backend_action_feedback(
+        self,
+        goal_handle: Any,
+        task_id: str,
+        task_name: str,
+        request: ExecuteTaskV1.Goal,
+        created_at: Any,
+        started_at: Any,
+        feedback: dict[str, Any],
+    ) -> None:
+        raw_progress = feedback.get("progress", 0.0)
+        try:
+            progress = min(1.0, max(0.0, float(raw_progress)))
+        except (TypeError, ValueError):
+            progress = 0.0
+
+        self._publish_task_feedback(
+            task_id=task_id,
+            task_name=task_name,
+            source=request.source,
+            correlation_id=request.correlation_id,
+            progress=progress,
+            feedback={"backend": feedback},
+            priority=request.priority,
+            created_at=created_at,
+            started_at=started_at,
+            status=TaskStatusV1.IN_PROGRESS,
+            context=request,
+        )
+
+        publish_feedback = getattr(goal_handle, "publish_feedback", None)
+        if not callable(publish_feedback):
+            return
+        msg = ExecuteTaskV1.Feedback()
+        msg.api_version = self.api_version
+        msg.task_id = task_id
+        msg.task_name = task_name
+        msg.source = request.source
+        msg.priority = request.priority
+        msg.correlation_id = request.correlation_id
+        msg.created_at = created_at
+        msg.started_at = started_at
+        msg.status = TaskStatusV1.IN_PROGRESS
+        msg.result_json = "{}"
+        msg.progress = progress
+        msg.feedback_json = self._json_dumps({"backend": feedback})
+        msg.duration_sec = self._duration_sec(started_at, self.get_clock().now().to_msg())
+        self._copy_public_context(request, msg)
+        msg.stamp = self.get_clock().now().to_msg()
+        publish_feedback(msg)
+
     def _publish_event(
         self,
         event_type: str,
@@ -4102,6 +4175,9 @@ class TaskOrchestratorNode(Node):
             "allowed_robot_modes": list(task.allowed_robot_modes),
             "requires_localization": task.requires_localization,
             "allow_emergency_stop": task.allow_emergency_stop,
+            "server_timeout": task.server_timeout,
+            "result_timeout": task.result_timeout,
+            "cancel_timeout": task.cancel_timeout,
             "supports_pause": task.pause_hook.configured,
             "supports_resume": task.resume_hook.configured,
             "queue_on_conflict_default": task.queue_on_conflict_default,

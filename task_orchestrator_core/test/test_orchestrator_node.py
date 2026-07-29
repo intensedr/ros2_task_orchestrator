@@ -86,9 +86,10 @@ class FakeActionTaskClient:
         self.task_data_json = task_data_json
         return self.prepared
 
-    def execute(self, prepared, task_id):
+    def execute(self, prepared, task_id, feedback_callback=None):
         assert prepared == self.prepared
         self.task_id = task_id
+        self.feedback_callback = feedback_callback
         if self.error is not None:
             raise self.error
         return self.result

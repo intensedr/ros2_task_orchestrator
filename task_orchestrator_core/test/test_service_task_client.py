@@ -13,15 +13,16 @@ class FakeClient:
         self.available = available
         self.response = response
         self.request = None
-        self.timeout_sec = None
+        self.server_timeout_sec = None
+        self.result_timeout_sec = None
 
     def wait_for_service(self, timeout_sec=None):
-        self.timeout_sec = timeout_sec
+        self.server_timeout_sec = timeout_sec
         return self.available
 
     def call(self, request, timeout_sec=None):
         self.request = request
-        self.timeout_sec = timeout_sec
+        self.result_timeout_sec = timeout_sec
         return self.response
 
 
@@ -42,6 +43,8 @@ def _service_task() -> TaskDefinition:
         msg_interface="std_srvs/srv/SetBool",
         task_server_type="service",
         cancel_timeout=3.0,
+        server_timeout=2.0,
+        result_timeout=4.0,
     )
 
 
@@ -54,7 +57,8 @@ def test_service_task_client_converts_json_request_and_response():
 
     assert prepared.request.data is True
     assert fake_client.request.data is True
-    assert fake_client.timeout_sec == 3.0
+    assert fake_client.server_timeout_sec == 2.0
+    assert fake_client.result_timeout_sec == 4.0
     assert result.result_json == '{"message": "ok", "success": true}'
 
 

@@ -50,6 +50,8 @@ class TaskDefinition:
     is_system_task: bool = False
     priority_default: int = 0
     cancel_timeout: float = 5.0
+    server_timeout: float = 5.0
+    result_timeout: float = 0.0
     resources: tuple[str, ...] = field(default_factory=tuple)
     tags: tuple[str, ...] = field(default_factory=tuple)
     task_group: str = ""
@@ -94,6 +96,16 @@ class TaskDefinition:
         min_battery_percent = float(admission.get("min_battery_percent", data.get("min_battery_percent", 0.0)))
         if min_battery_percent < 0:
             raise TaskConfigError(f"min_battery_percent for {task_name} must be non-negative")
+        cancel_timeout = float(data.get("cancel_timeout", 5.0))
+        server_timeout = float(data.get("server_timeout", 5.0))
+        result_timeout = float(data.get("result_timeout", 0.0))
+        for field_name, value in (
+            ("cancel_timeout", cancel_timeout),
+            ("server_timeout", server_timeout),
+            ("result_timeout", result_timeout),
+        ):
+            if value < 0:
+                raise TaskConfigError(f"{field_name} for {task_name} must be non-negative")
 
         return cls(
             task_name=task_name,
@@ -106,7 +118,9 @@ class TaskDefinition:
             reentrant=bool(data.get("reentrant", True)),
             is_system_task=bool(data.get("is_system_task", False)),
             priority_default=int(data.get("priority_default", data.get("priority", 0))),
-            cancel_timeout=float(data.get("cancel_timeout", 5.0)),
+            cancel_timeout=cancel_timeout,
+            server_timeout=server_timeout,
+            result_timeout=result_timeout,
             resources=_as_string_list(data.get("resources"), "resources"),
             tags=_as_string_list(data.get("tags"), "tags"),
             task_group=task_group,

@@ -1,0 +1,9 @@
+bool arm
+bool force
+---
+bool success
+string error_message
+bool armed
+---
+bool armed
+string state

@@ -34,6 +34,8 @@ target.
 - `task_orchestrator_msgs`: public ROS2 messages, services and actions.
 - `task_orchestrator_core`: core orchestrator node and task lifecycle logic.
 - `task_orchestrator_examples`: example configs and launch files.
+- `task_orchestrator_drone_msgs`: backend-neutral drone actions and state.
+- `task_orchestrator_ardupilot_bridge`: ArduPilot MAVLink bridge and SITL launch.
 - `task_orchestrator_sim_nav2`: optional Nav2 TurtleBot simulation scenarios.
 - `task_orchestrator_sim_drone`: optional fake drone simulation scenarios.
 
@@ -77,6 +79,7 @@ docker build --build-arg ROS_DISTRO=jazzy -f docker/Dockerfile -t ros-task-orche
 - [Nav2 Example](docs/examples/nav2.md): navigation task config.
 - [Nav2 Simulation](docs/examples/sim_nav2.md): optional TurtleBot/Nav2 simulation.
 - [Drone Simulation](docs/examples/sim_drone.md): optional fake drone mission simulation.
+- [ArduPilot Bridge](task_orchestrator_ardupilot_bridge/README.md): MAVLink integration and SITL workflow.
 - [Architecture](docs/architecture.md): core boundaries and runtime shape.
 
 ## License

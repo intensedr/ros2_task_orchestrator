@@ -1,0 +1,15 @@
+builtin_interfaces/Time stamp
+bool connected
+bool armed
+bool landed
+string flight_mode
+string system_status
+float32 battery_percent
+float32 battery_voltage
+int32 gps_fix_type
+int32 satellites_visible
+bool localization_ok
+bool failsafe
+float64 relative_altitude
+float64 heartbeat_age_sec
+string autopilot_version

@@ -1,0 +1,8 @@
+string mode
+---
+bool success
+string error_message
+string current_mode
+---
+string current_mode
+string state

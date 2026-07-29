@@ -14,7 +14,8 @@ MAVLink or a flight controller runtime. It provides:
 
 ```bash
 colcon build --packages-select \
-  task_orchestrator_msgs task_orchestrator_core task_orchestrator_sim_drone \
+  task_orchestrator_msgs task_orchestrator_drone_msgs \
+  task_orchestrator_core task_orchestrator_sim_drone \
   --symlink-install
 source install/setup.bash
 ```

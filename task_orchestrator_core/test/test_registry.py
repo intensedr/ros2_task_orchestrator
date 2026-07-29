@@ -28,6 +28,9 @@ tasks:
     task_server_type: action
     blocking: true
     cancel_reported_as_success: true
+    server_timeout: 2.5
+    result_timeout: 60.0
+    cancel_timeout: 4.0
     reentrant: false
     task_group: navigation
     capability_tags: [localization, motion]
@@ -63,6 +66,9 @@ tasks:
     assert task.topic == "/navigate_to_pose"
     assert task.blocking is True
     assert task.cancel_reported_as_success is True
+    assert task.server_timeout == 2.5
+    assert task.result_timeout == 60.0
+    assert task.cancel_timeout == 4.0
     assert task.reentrant is False
     assert task.task_group == "navigation"
     assert task.capability_tags == ("localization", "motion")

@@ -17,6 +17,8 @@ tasks:
     cancel_reported_as_success: false
     reentrant: false
     priority_default: 0
+    server_timeout: 5.0
+    result_timeout: 120.0
     cancel_timeout: 5.0
     resources: [base, map]
     task_group: navigation
@@ -65,7 +67,12 @@ tasks:
 - `cancel_reported_as_success`: reports canceled action goals as successful
   completion.
 - `reentrant`: allows multiple active instances of the same task name.
-- `cancel_timeout`: timeout for action goal cancellation.
+- `server_timeout`: timeout while waiting for an action/service server and for
+  action goal acceptance.
+- `result_timeout`: maximum execution time for the backend action/service. `0`
+  disables the registry-level result timeout; a request `timeout_sec` or
+  `deadline_at` can still impose a shorter limit.
+- `cancel_timeout`: timeout for action goal cancellation only.
 - `resources`: resource labels for conflict and observability metadata.
 - `task_group`: optional single-group lock; active tasks in the same group
   conflict.

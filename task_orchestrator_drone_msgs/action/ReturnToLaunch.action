@@ -1,0 +1,9 @@
+bool wait_for_landing
+---
+bool success
+string error_message
+bool landed
+---
+string state
+float64 distance_to_home
+float64 current_altitude

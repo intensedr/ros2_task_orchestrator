@@ -4,6 +4,7 @@ from example_interfaces.action import Fibonacci
 from task_orchestrator_core.clients.action_task import (
     ActionTaskClient,
     ActionTaskDataError,
+    ActionTaskFailed,
     ActionTaskRejected,
     ActionTaskServerUnavailable,
 )
@@ -60,13 +61,15 @@ class FakeActionClient:
         self.goal_handle = goal_handle
         self.goal = None
         self.timeout_sec = None
+        self.feedback_callback = None
 
     def wait_for_server(self, timeout_sec=None):
         self.timeout_sec = timeout_sec
         return self.available
 
-    def send_goal_async(self, goal):
+    def send_goal_async(self, goal, feedback_callback=None):
         self.goal = goal
+        self.feedback_callback = feedback_callback
         return FakeFuture(self.goal_handle)
 
 
@@ -77,6 +80,8 @@ def _action_task() -> TaskDefinition:
         msg_interface="example_interfaces/action/Fibonacci",
         task_server_type="action",
         cancel_timeout=3.0,
+        server_timeout=2.0,
+        result_timeout=4.0,
     )
 
 
@@ -99,8 +104,46 @@ def test_action_task_client_converts_json_goal_and_result():
 
     assert prepared.goal.order == 5
     assert fake_action_client.goal.order == 5
-    assert fake_action_client.timeout_sec == 3.0
+    assert fake_action_client.timeout_sec == 2.0
     assert result.result_json == '{"sequence": [1, 1, 2]}'
+
+
+def test_action_task_client_forwards_backend_feedback():
+    result_response = FakeResultResponse(
+        status=GoalStatus.STATUS_SUCCEEDED,
+        result=Fibonacci.Result(sequence=[]),
+    )
+    fake_action_client = FakeActionClient(goal_handle=FakeGoalHandle(result_response=result_response))
+    client = _client_with_fake_action(fake_action_client)
+    received = []
+
+    prepared = client.prepare(_action_task(), '{"order": 1}')
+    client.execute(prepared, task_id="task-1", feedback_callback=received.append)
+    feedback = Fibonacci.Feedback(sequence=[1, 1])
+    fake_action_client.feedback_callback(type("FeedbackMessage", (), {"feedback": feedback})())
+
+    assert received == [{"sequence": [1, 1]}]
+
+
+def test_action_task_client_rejects_success_status_with_failed_result_flag():
+    class BackendResult:
+        success = False
+        error_message = "vehicle rejected command"
+
+    result_response = FakeResultResponse(
+        status=GoalStatus.STATUS_SUCCEEDED,
+        result=BackendResult(),
+    )
+    fake_action_client = FakeActionClient(goal_handle=FakeGoalHandle(result_response=result_response))
+    client = _client_with_fake_action(fake_action_client)
+    prepared = client.prepare(_action_task(), '{"order": 1}')
+
+    try:
+        client.execute(prepared, task_id="task-1")
+    except ActionTaskFailed as exc:
+        assert "vehicle rejected command" in str(exc)
+    else:
+        raise AssertionError("expected ActionTaskFailed")
 
 
 def test_action_task_client_rejects_invalid_json():
