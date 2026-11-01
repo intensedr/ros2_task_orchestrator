@@ -36,6 +36,8 @@ target.
 - `task_orchestrator_examples`: example configs and launch files.
 - `task_orchestrator_drone_msgs`: backend-neutral drone actions and state.
 - `task_orchestrator_ardupilot_bridge`: ArduPilot MAVLink bridge and SITL launch.
+- `task_orchestrator_media_msgs`: backend-neutral media artifacts, sessions and commands.
+- `task_orchestrator_media`: image/audio capture, H.264/AAC recording, bounded spool and S3 upload.
 - `task_orchestrator_sim_nav2`: optional Nav2 TurtleBot simulation scenarios.
 - `task_orchestrator_sim_drone`: optional fake drone simulation scenarios.
 
@@ -80,6 +82,7 @@ docker build --build-arg ROS_DISTRO=jazzy -f docker/Dockerfile -t ros-task-orche
 - [Nav2 Simulation](docs/examples/sim_nav2.md): optional TurtleBot/Nav2 simulation.
 - [Drone Simulation](docs/examples/sim_drone.md): optional fake drone mission simulation.
 - [ArduPilot Bridge](task_orchestrator_ardupilot_bridge/README.md): MAVLink integration and SITL workflow.
+- [Media Capture](docs/media.md): snapshots, background recordings and artifact storage.
 - [Architecture](docs/architecture.md): core boundaries and runtime shape.
 
 ## License

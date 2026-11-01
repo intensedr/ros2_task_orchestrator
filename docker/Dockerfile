@@ -9,6 +9,8 @@ WORKDIR ${ROS_WS}
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       python3-colcon-common-extensions \
+      ffmpeg \
+      python3-boto3 \
       python3-pip \
       python3-rosdep \
       python3-vcstool && \
@@ -17,6 +19,8 @@ RUN apt-get update && \
 
 COPY task_orchestrator_msgs src/task_orchestrator_msgs
 COPY task_orchestrator_core src/task_orchestrator_core
+COPY task_orchestrator_media_msgs src/task_orchestrator_media_msgs
+COPY task_orchestrator_media src/task_orchestrator_media
 
 RUN . /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep update && \

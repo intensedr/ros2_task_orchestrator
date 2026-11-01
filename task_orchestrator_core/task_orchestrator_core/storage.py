@@ -8,8 +8,13 @@ from typing import Any
 
 from builtin_interfaces.msg import Time
 
-from task_orchestrator_msgs.msg import TaskEventV1, TaskRecordV1, TaskResultV1, TaskStatusV1
-from task_orchestrator_msgs.srv import ListEventsV1, ListTaskRecordsV1
+from task_orchestrator_msgs.msg import (  # type: ignore[attr-defined]
+    TaskEventV1,
+    TaskRecordV1,
+    TaskResultV1,
+    TaskStatusV1,
+)
+from task_orchestrator_msgs.srv import ListEventsV1, ListTaskRecordsV1  # type: ignore[attr-defined]
 
 
 class SQLiteStorageError(RuntimeError):

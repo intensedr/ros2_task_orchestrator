@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from task_orchestrator_core.error_model import maybe_add_error
-from task_orchestrator_msgs.msg import TaskStatusV1
+from task_orchestrator_msgs.msg import TaskStatusV1  # type: ignore[attr-defined]
 
 
 class MissionTaskValidationError(ValueError):
@@ -134,11 +134,13 @@ class MissionTaskParser:
         if not isinstance(retry_policy, dict):
             raise MissionTaskValidationError(f"subtasks[{index - 1}].retry_policy must be an object")
 
-        max_attempts = int(retry_policy.get("max_attempts", item.get("max_attempts", 1)))
+        max_attempts_value: Any = retry_policy.get("max_attempts", item.get("max_attempts", 1))
+        max_attempts = int(max_attempts_value)
         if max_attempts < 1:
             raise MissionTaskValidationError(f"subtasks[{index - 1}].max_attempts must be at least 1")
 
-        retry_backoff_sec = float(retry_policy.get("backoff_sec", item.get("retry_backoff_sec", 0.0)))
+        retry_backoff_value: Any = retry_policy.get("backoff_sec", item.get("retry_backoff_sec", 0.0))
+        retry_backoff_sec = float(retry_backoff_value)
         if retry_backoff_sec < 0:
             raise MissionTaskValidationError(f"subtasks[{index - 1}].retry_backoff_sec must be non-negative")
 
@@ -148,7 +150,10 @@ class MissionTaskParser:
                 f"subtasks[{index - 1}].retry_policy.backoff_type must be fixed or exponential"
             )
 
-        retry_max_backoff_sec = float(retry_policy.get("max_backoff_sec", item.get("retry_max_backoff_sec", 0.0)))
+        retry_max_backoff_value: Any = retry_policy.get(
+            "max_backoff_sec", item.get("retry_max_backoff_sec", 0.0)
+        )
+        retry_max_backoff_sec = float(retry_max_backoff_value)
         if retry_max_backoff_sec < 0:
             raise MissionTaskValidationError(
                 f"subtasks[{index - 1}].retry_policy.max_backoff_sec must be non-negative"

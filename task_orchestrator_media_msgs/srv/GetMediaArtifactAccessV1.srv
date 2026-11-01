@@ -1,0 +1,10 @@
+string artifact_id
+uint32 expires_sec
+---
+bool found
+string upload_state
+string remote_object_key
+string access_url
+builtin_interfaces/Time expires_at
+string error_code
+string error_message

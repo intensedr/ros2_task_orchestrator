@@ -22,6 +22,7 @@ from task_orchestrator_core.constants import (
     TOPIC_FEEDBACK,
     TOPIC_RESULTS,
 )
+
 from task_orchestrator_msgs.action import ExecuteTaskV1
 from task_orchestrator_msgs.msg import (
     ActiveTaskArrayV1,
@@ -50,7 +51,6 @@ from task_orchestrator_msgs.srv import (
     ValidateMissionV1,
     ValidateTaskV1,
 )
-
 
 PUBLIC_METADATA_FIELDS = (
     "api_version",

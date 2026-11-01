@@ -24,10 +24,13 @@ jobs:
         run: python -m pip install ruff mypy
 
       - name: Ruff
-        run: ruff check task_orchestrator_core
+        run: ruff check task_orchestrator_core task_orchestrator_media
 
       - name: Mypy
-        run: mypy task_orchestrator_core/task_orchestrator_core
+        run: >
+          mypy
+          task_orchestrator_core/task_orchestrator_core
+          task_orchestrator_media/task_orchestrator_media
 
   docker-build-test:
     name: ROS2 ${{ matrix.ros_distro }}

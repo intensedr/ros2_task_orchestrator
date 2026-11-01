@@ -1,0 +1,15 @@
+string api_version
+string session_id
+string device_id
+string audio_device_id
+string audio_mode
+float64 max_duration_sec
+string task_id
+string mission_id
+string idempotency_key
+string metadata_json
+---
+bool success
+string error_code
+string error_message
+MediaSessionV1 session

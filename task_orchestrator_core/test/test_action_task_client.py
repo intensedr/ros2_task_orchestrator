@@ -1,6 +1,5 @@
 from action_msgs.msg import GoalStatus
 from example_interfaces.action import Fibonacci
-
 from task_orchestrator_core.clients.action_task import (
     ActionTaskClient,
     ActionTaskDataError,

@@ -1,5 +1,4 @@
 from std_srvs.srv import SetBool
-
 from task_orchestrator_core.clients.service_task import (
     ServiceTaskClient,
     ServiceTaskDataError,

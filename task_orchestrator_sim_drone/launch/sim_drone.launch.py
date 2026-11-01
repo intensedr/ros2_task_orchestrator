@@ -13,7 +13,7 @@ def _is_true(value: str) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
-def _gazebo_actions(context, *_args, **_kwargs) -> list[IncludeLaunchDescription]:
+def _gazebo_actions(context, *_args, **_kwargs) -> list[object]:
     if not _is_true(LaunchConfiguration("use_gazebo").perform(context)):
         return []
 
@@ -26,12 +26,35 @@ def _gazebo_actions(context, *_args, **_kwargs) -> list[IncludeLaunchDescription
         ) from exc
 
     gazebo_world = LaunchConfiguration("gazebo_world")
-    return [
+    actions: list[object] = [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(ros_gz_sim_share, "launch", "gz_sim.launch.py")),
             launch_arguments={"gz_args": ["-r -v4 ", gazebo_world]}.items(),
         )
     ]
+    if _is_true(LaunchConfiguration("camera_bridge_enabled").perform(context)):
+        camera_topic = LaunchConfiguration("camera_topic")
+        actions.append(
+            Node(
+                package="ros_gz_image",
+                executable="image_bridge",
+                name="front_camera_image_bridge",
+                output="screen",
+                arguments=[camera_topic],
+                parameters=[{"qos": "sensor_data"}],
+            )
+        )
+        if _is_true(LaunchConfiguration("show_camera").perform(context)):
+            actions.append(
+                Node(
+                    package="rqt_image_view",
+                    executable="rqt_image_view",
+                    name="front_camera_view",
+                    output="screen",
+                    arguments=[camera_topic],
+                )
+            )
+    return actions
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -75,6 +98,21 @@ def generate_launch_description() -> LaunchDescription:
                 "gazebo_world",
                 default_value=default_gazebo_world,
                 description="Gazebo SDF world file used when use_gazebo is true.",
+            ),
+            DeclareLaunchArgument(
+                "camera_bridge_enabled",
+                default_value="true",
+                description="Bridge the Gazebo RGB camera into ROS 2 with ros_gz_image.",
+            ),
+            DeclareLaunchArgument(
+                "camera_topic",
+                default_value="/drone/front_camera",
+                description="Gazebo and ROS 2 image topic for the demo RGB camera.",
+            ),
+            DeclareLaunchArgument(
+                "show_camera",
+                default_value="false",
+                description="Open rqt_image_view for the front camera.",
             ),
             DeclareLaunchArgument("initial_x", default_value="0.0"),
             DeclareLaunchArgument("initial_y", default_value="0.0"),

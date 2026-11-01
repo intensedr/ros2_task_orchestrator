@@ -1,0 +1,4 @@
+string session_id
+---
+bool found
+MediaSessionV1 session

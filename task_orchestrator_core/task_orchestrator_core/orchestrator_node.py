@@ -9,10 +9,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from builtin_interfaces.msg import Time
-from rcl_interfaces.msg import ParameterDescriptor
 import rclpy
 import yaml
+from builtin_interfaces.msg import Time
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.action import ActionServer, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -56,12 +56,12 @@ from task_orchestrator_core.constants import (
     SERVICE_GET_TASK,
     SERVICE_LIST_AGENTS,
     SERVICE_LIST_TASKS,
-    SERVICE_PAUSE_TASKS,
     SERVICE_PAUSE_MISSION,
+    SERVICE_PAUSE_TASKS,
     SERVICE_REGISTER_AGENT,
     SERVICE_RELEASE_MISSION,
-    SERVICE_RESUME_TASKS,
     SERVICE_RESUME_MISSION,
+    SERVICE_RESUME_TASKS,
     SERVICE_RETRY_MISSION,
     SERVICE_SUBMIT_MISSION,
     SERVICE_VALIDATE_MISSION,
@@ -71,8 +71,8 @@ from task_orchestrator_core.constants import (
     TOPIC_FEEDBACK,
     TOPIC_RESULTS,
 )
-from task_orchestrator_core.event_hooks import TaskEventHook
 from task_orchestrator_core.error_model import result_json_with_error
+from task_orchestrator_core.event_hooks import TaskEventHook
 from task_orchestrator_core.policy import AdmissionSnapshot, PolicyDecision, TaskPolicyEngine
 from task_orchestrator_core.registry import TaskRegistry
 from task_orchestrator_core.storage import SQLiteTaskStorage
@@ -92,8 +92,8 @@ from task_orchestrator_core.system_tasks.mission import (
 )
 from task_orchestrator_core.system_tasks.wait import WaitTaskExecutor, WaitTaskValidationError
 from task_orchestrator_core.task_models import TaskConfigError, TaskControlHook, TaskDefinition
-from task_orchestrator_msgs.action import ExecuteTaskV1
-from task_orchestrator_msgs.msg import (
+from task_orchestrator_msgs.action import ExecuteTaskV1  # type: ignore[attr-defined]
+from task_orchestrator_msgs.msg import (  # type: ignore[attr-defined]
     ActiveTaskArrayV1,
     ActiveTaskV1,
     AgentRecordV1,
@@ -108,7 +108,7 @@ from task_orchestrator_msgs.msg import (
     TaskSpecV1,
     TaskStatusV1,
 )
-from task_orchestrator_msgs.srv import (
+from task_orchestrator_msgs.srv import (  # type: ignore[attr-defined]
     CancelMissionV1,
     CancelTasksV1,
     ClaimMissionV1,
@@ -120,9 +120,9 @@ from task_orchestrator_msgs.srv import (
     ListTasksV1,
     PauseMissionV1,
     PauseTasksV1,
-    ReloadConfigV1,
     RegisterAgentV1,
     ReleaseMissionV1,
+    ReloadConfigV1,
     ResumeMissionV1,
     ResumeTasksV1,
     RetryMissionV1,
@@ -131,7 +131,6 @@ from task_orchestrator_msgs.srv import (
     ValidateMissionV1,
     ValidateTaskV1,
 )
-
 
 _CONTROL_TASK_SERVER_TYPES = {"system/cancel_task", "system/stop"}
 _PUBLIC_CONTEXT_FIELDS = (
@@ -3374,12 +3373,12 @@ class TaskOrchestratorNode(Node):
         )
         try:
             if hook.task_server_type == "service":
-                prepared = self._service_task_client.prepare(hook_task, hook.task_data_json)
-                self._service_task_client.execute(prepared)
+                prepared_service = self._service_task_client.prepare(hook_task, hook.task_data_json)
+                self._service_task_client.execute(prepared_service)
                 return True
             if hook.task_server_type == "action":
-                prepared = self._action_task_client.prepare(hook_task, hook.task_data_json)
-                self._action_task_client.execute(prepared, f"{task_id}/{operation}")
+                prepared_action = self._action_task_client.prepare(hook_task, hook.task_data_json)
+                self._action_task_client.execute(prepared_action, f"{task_id}/{operation}")
                 return True
         except Exception as exc:  # noqa: BLE001 - control failures are reported through the public service.
             self.get_logger().warning(f"Failed to {operation} task {task_id}: {exc}")

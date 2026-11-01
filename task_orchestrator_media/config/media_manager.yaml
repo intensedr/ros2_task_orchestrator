@@ -1,0 +1,69 @@
+media_manager:
+  ros__parameters:
+    api_version: "v1"
+    spool_path: "~/.local/share/task_orchestrator/media"
+    max_spool_bytes: 10737418240
+    min_free_bytes: 268435456
+    max_capture_count: 100
+    default_capture_timeout_sec: 5.0
+    max_capture_timeout_sec: 120.0
+    recording_queue_size: 120
+    recording_queue_max_bytes: 134217728
+    max_frame_bytes: 16777216
+    max_audio_chunk_bytes: 4194304
+    device_stale_after_sec: 5.0
+    session_stop_timeout_sec: 30.0
+    max_metadata_bytes: 16384
+    auto_finalize_on_mission_terminal: true
+    recording_backend: "ffmpeg_mp4"
+    ffmpeg_binary: "ffmpeg"
+    ffmpeg_video_codec: "libx264"
+    ffmpeg_preset: "veryfast"
+    ffmpeg_crf: 23
+    recording_fps: 30.0
+    max_recording_bytes: 2147483648
+    ffmpeg_finalize_timeout_sec: 20.0
+    ffmpeg_threads: 0
+    ffmpeg_audio_codec: "aac"
+    ffmpeg_audio_bitrate_kbps: 128
+    upload_enabled: false
+    upload_bucket: ""
+    upload_prefix: "task-orchestrator"
+    upload_endpoint_url: ""
+    upload_region: ""
+    upload_public_base_url: ""
+    upload_addressing_style: "auto"
+    upload_allow_insecure_endpoint: false
+    upload_max_attempts: 3
+    upload_retry_delay_sec: 1.0
+    upload_presign_default_sec: 900
+    upload_presign_max_sec: 3600
+    upload_server_side_encryption: ""
+    upload_kms_key_id: ""
+    devices_json: >-
+      [
+        {
+          "device_id": "front_rgb",
+          "display_name": "Front RGB camera",
+          "source_topic": "/camera/image/compressed",
+          "media_kind": "image",
+          "mime_type": "image/jpeg",
+          "extension": ".jpg",
+          "frame_id": "front_camera_optical_frame",
+          "capabilities": ["snapshot", "recording"]
+        }
+      ]
+    audio_devices_json: >-
+      [
+        {
+          "device_id": "body_microphone",
+          "display_name": "Body microphone",
+          "source_topic": "/audio/pcm",
+          "message_type": "task_orchestrator_media_msgs/msg/AudioChunkV1",
+          "sample_format": "s16le",
+          "sample_rate_hz": 48000,
+          "channels": 1,
+          "frame_id": "body_microphone_frame",
+          "capabilities": ["recording"]
+        }
+      ]

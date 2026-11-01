@@ -8,6 +8,8 @@ contracts and examples.
 - `task_orchestrator_msgs`: public action, service and message contracts.
 - `task_orchestrator_core`: core node, task registry and task lifecycle logic.
 - `task_orchestrator_examples`: example configs and launch files.
+- `task_orchestrator_media_msgs`: optional backend-neutral media contracts.
+- `task_orchestrator_media`: optional image/audio control, artifact spool and upload.
 - `task_orchestrator_sim_nav2`: optional Nav2 TurtleBot simulation scenarios.
 
 ## Core Boundary
@@ -111,3 +113,8 @@ SQLite durability is available as an optional backend through
 events are written to SQLite using Python standard-library `sqlite3`; the same
 query services read from SQLite for recovery across node restarts. Stored
 records include duration, idempotency, fleet-safe metadata and tracing fields.
+
+Media follows a separate control/data-plane boundary. The orchestrator stores
+only artifact and session descriptors; encoded frames are written directly by
+the optional media manager to its bounded local spool. See
+[ADR 0008](adr/0008-media-data-plane.md).

@@ -12,10 +12,10 @@ theme:
 
 nav:
   - Overview: index.md
-  - Roadmap: roadmap.md
   - Getting Started: getting-started.md
   - Concepts:
       - Observability: concepts/observability.md
+      - Media Capture: media.md
       - Architecture: architecture.md
       - Event Envelope: event_envelope.md
   - Configuration:
@@ -42,6 +42,7 @@ nav:
       - ADR 0005: adr/0005-mission-model.md
       - ADR 0006: adr/0006-bridge-boundaries.md
       - ADR 0007: adr/0007-ros-distribution-support.md
+      - ADR 0008: adr/0008-media-data-plane.md
 
 markdown_extensions:
   - admonition

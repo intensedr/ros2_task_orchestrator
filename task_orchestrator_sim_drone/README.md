@@ -5,9 +5,11 @@ Optional fake drone simulation package for ROS2 Task Orchestrator.
 This package is intentionally lightweight. It does not start ArduPilot, PX4,
 MAVLink or a flight controller runtime. It provides:
 
-- a local OpenRobotics Iris with Standoffs Gazebo Fuel model;
+- a local OpenRobotics Iris with Standoffs Gazebo Fuel model wrapped with a
+  fixed 1280x720 RGB inspection camera;
 - fake ROS 2 action servers for takeoff, waypoint, hover and land;
-- a static Gazebo world that includes the local Iris model;
+- a compact inspection world with a landing pad, equipment cabinet, tank,
+  warehouse and route markers;
 - task registry and mission JSON examples for orchestrator demos.
 
 ## Build
@@ -31,16 +33,49 @@ ros2 launch task_orchestrator_sim_drone sim_drone.launch.py
 The launch starts Gazebo with `worlds/drone_demo_world.sdf`, starts
 `fake_drone_server`, and starts `task_orchestrator_node` with
 `config/drone_tasks.yaml`. The Gazebo world includes the local
-`model://iris_with_standoffs` asset, so Gazebo does not need to download it from
-Fuel at launch time. The model keeps the downloaded `model.sdf` as source data
-and loads that SDF through `model.config`. Its visible geometry is built from
-Gazebo primitives instead of Collada meshes, avoiding DAE importer artifacts in
-Gazebo Sim.
+`model://iris_inspection` asset, which wraps the local
+`model://iris_with_standoffs` model, so Gazebo does not need to download assets
+from Fuel at launch time. The base Iris keeps the downloaded `model.sdf` as
+source data and loads that SDF through `model.config`. Its visible geometry is
+built from Gazebo primitives instead of Collada meshes, avoiding DAE importer
+artifacts in Gazebo Sim.
 
 The fake drone server also mirrors its `/drone/pose` state into Gazebo through
 the `/world/drone_demo/set_pose` service, so the visible Iris model moves during
 takeoff, waypoint and landing tasks. Adjust the update rate with
 `gazebo_pose_sync_rate_hz:=...` if needed.
+
+## Front Camera
+
+Gazebo publishes the fixed, forward/downward RGB camera on
+`/drone/front_camera`. The launch file starts `ros_gz_image`, so the raw ROS 2
+topic is available as `sensor_msgs/msg/Image`:
+
+```bash
+ros2 topic hz /drone/front_camera
+```
+
+Open a viewer together with the simulation:
+
+```bash
+ros2 launch task_orchestrator_sim_drone sim_drone.launch.py show_camera:=true
+```
+
+When `compressed_image_transport` is installed, the same bridge also exposes
+`/drone/front_camera/compressed` as `sensor_msgs/msg/CompressedImage`. That is
+the topic intended for `task_orchestrator_media` snapshots and recording.
+
+Disable the ROS bridge while keeping the Gazebo sensor active with:
+
+```bash
+ros2 launch task_orchestrator_sim_drone sim_drone.launch.py camera_bridge_enabled:=false
+```
+
+The camera pose is a demonstration assumption: 17 cm forward from `base_link`,
+3.5 cm below it, with a 30 degree downward pitch. The generated world and model
+sources are `worlds/gen_drone_demo_world.py` and
+`models/iris_inspection/gen_model.py`; do not hand-edit their generated `.sdf`
+outputs.
 
 For runs without Gazebo:
 
@@ -96,4 +131,6 @@ subtasks run serially and demonstrate resource locking.
   `lease_token` printed by `submit_inspection_mission`.
 - `models/iris_with_standoffs`: local copy of the OpenRobotics Iris with
   Standoffs Gazebo Fuel model, with simplified primitive visuals for Gazebo Sim.
-- `worlds/drone_demo_world.sdf`: static Gazebo world with the local Iris model.
+- `models/iris_inspection`: generated demo wrapper with the RGB camera.
+- `worlds/drone_demo_world.sdf`: generated inspection world aligned with the
+  mission waypoints.

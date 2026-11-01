@@ -43,6 +43,30 @@ Additional V1 query/admin endpoints:
 - `/task_orchestrator/stop`: `StopTasksV1`
 - `/task_orchestrator/reload_config`: `ReloadConfigV1`
 
+## Optional Media API
+
+The `task_orchestrator_media_msgs` package and media manager expose:
+
+- `/task_orchestrator/media/capture`: `CaptureMediaV1`
+- `/task_orchestrator/media/start_recording`: `StartRecordingV1`
+- `/task_orchestrator/media/stop_recording`: `StopRecordingV1`
+- `/task_orchestrator/media/get_session`: `GetMediaSessionV1`
+- `/task_orchestrator/media/get_artifact_access`: `GetMediaArtifactAccessV1`
+- `/task_orchestrator/media/list_devices`: `ListMediaDevicesV1`
+
+These endpoints exchange descriptors only. Encoded media is never carried by
+the task result or event API. `MediaDeviceStateV1`, `MediaSessionStateV1`,
+`MediaUploadStateV1` and `MediaErrorCodeV1` provide stable string constants for
+clients. `MediaSessionV1.recording_backend` identifies the selected storage
+backend; the default `ffmpeg_mp4` backend returns a `video/mp4` artifact, while
+`frame_sequence` returns a frame-manifest artifact.
+
+`StartRecordingV1.audio_device_id` and `audio_mode` select no audio, an AAC
+track muxed into MP4, or a separate M4A artifact. `MediaArtifactV1` returns
+upload state and a non-secret remote object key. Temporary presigned URLs are
+created only by `GetMediaArtifactAccessV1` and must not be copied into task
+history.
+
 ## Built-In System Tasks
 
 - `system/wait`

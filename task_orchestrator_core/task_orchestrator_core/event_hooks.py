@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from task_orchestrator_msgs.msg import TaskEventV1
+from task_orchestrator_msgs.msg import TaskEventV1  # type: ignore[attr-defined]
 
 
 class TaskEventHook(Protocol):

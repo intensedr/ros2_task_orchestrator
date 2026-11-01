@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from task_orchestrator_core.active_tasks import ActiveTaskEntry
 from task_orchestrator_core.task_models import TaskDefinition
-from task_orchestrator_msgs.msg import ErrorCodeV1
+from task_orchestrator_msgs.msg import ErrorCodeV1  # type: ignore[attr-defined]
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,18 @@
+string api_version
+string device_id
+uint32 count
+float64 interval_sec
+float64 timeout_sec
+string task_id
+string mission_id
+string idempotency_key
+string metadata_json
+---
+bool success
+string error_code
+string error_message
+MediaArtifactV1[] artifacts
+---
+uint32 captured_count
+uint32 total_count
+string current_artifact_id

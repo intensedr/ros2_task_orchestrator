@@ -1,0 +1,34 @@
+tasks:
+  - task_name: media/capture
+    topic: /task_orchestrator/media/capture
+    msg_interface: task_orchestrator_media_msgs/action/CaptureMediaV1
+    task_server_type: action
+    blocking: false
+    cancel_on_stop: true
+    reentrant: true
+    server_timeout: 5.0
+    result_timeout: 130.0
+    cancel_timeout: 5.0
+    tags: [media, capture]
+
+  - task_name: media/start_recording
+    topic: /task_orchestrator/media/start_recording
+    msg_interface: task_orchestrator_media_msgs/srv/StartRecordingV1
+    task_server_type: service
+    blocking: false
+    cancel_on_stop: false
+    reentrant: true
+    server_timeout: 5.0
+    result_timeout: 10.0
+    tags: [media, recording]
+
+  - task_name: media/stop_recording
+    topic: /task_orchestrator/media/stop_recording
+    msg_interface: task_orchestrator_media_msgs/srv/StopRecordingV1
+    task_server_type: service
+    blocking: false
+    cancel_on_stop: false
+    reentrant: true
+    server_timeout: 5.0
+    result_timeout: 40.0
+    tags: [media, recording]

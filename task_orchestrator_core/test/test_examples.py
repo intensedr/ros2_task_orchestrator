@@ -1,6 +1,6 @@
 import json
-from pathlib import Path
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from task_orchestrator_core.registry import TaskRegistry
 from task_orchestrator_core.system_tasks.mission import MissionTaskParser

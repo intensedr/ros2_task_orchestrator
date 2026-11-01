@@ -1,9 +1,8 @@
-from glob import glob
 import os
 import warnings
+from glob import glob
 
 from setuptools import find_packages, setup
-
 
 package_name = "task_orchestrator_core"
 

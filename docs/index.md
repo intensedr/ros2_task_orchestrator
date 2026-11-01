@@ -14,6 +14,8 @@ feedback, structured events and optional SQLite durability.
   logic.
 - `task_orchestrator_examples`: example task configs, launch files and
   payloads.
+- `task_orchestrator_media_msgs`: backend-neutral media contracts.
+- `task_orchestrator_media`: image/audio recording, bounded spool and optional S3 upload.
 - `task_orchestrator_sim_nav2`: optional Nav2 TurtleBot simulation scenarios.
 - `task_orchestrator_sim_drone`: optional fake drone simulation scenarios.
 
@@ -38,9 +40,9 @@ feedback, structured events and optional SQLite durability.
 ## Next Reading
 
 - [Getting Started](getting-started.md)
-- [Roadmap](roadmap.md)
 - [Task YAML](configuration/task-yaml.md)
 - [Public API](api/public-api.md)
 - [Agent Connection](examples/agent_connection.md)
 - [Observability](concepts/observability.md)
+- [Media Capture](media.md)
 - [SQLite Storage](operations/sqlite-storage.md)

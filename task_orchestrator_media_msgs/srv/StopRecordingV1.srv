@@ -1,0 +1,6 @@
+string session_id
+---
+bool success
+string error_code
+string error_message
+MediaSessionV1 session
